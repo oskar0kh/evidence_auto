@@ -1,0 +1,30 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build
+frontend/dist/
+backend/build/
+backend/.gradle/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated screenshots
+backend/captured_page/
+captured_page/
+
+# Env
+.env
+.env.local
