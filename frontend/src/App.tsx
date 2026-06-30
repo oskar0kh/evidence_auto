@@ -4,6 +4,7 @@ import { crawlDcinside } from './api';
 import { saveCapturesToDirectory } from './captureFiles';
 import { exportCrimeListExcel } from './excelExport';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './nativeFolderPicker';
+import { getCaptureFilename, joinDirectoryPath } from './pathUtils';
 import type { DcinsidePostData } from './types';
 import './App.css';
 
@@ -45,7 +46,7 @@ interface CrawlProgress {
 export default function App() {
   const [urlInput, setUrlInput] = useState('');
   const saveDirectoryRef = useRef<FileSystemDirectoryHandle | null>(null);
-  const [saveDirectoryLabel, setSaveDirectoryLabel] = useState('');
+  const [saveDirectoryPath, setSaveDirectoryPath] = useState('');
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<CrawlProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -61,7 +62,7 @@ export default function App() {
     try {
       const handle = await pickNativeDirectory();
       saveDirectoryRef.current = handle;
-      setSaveDirectoryLabel(handle.name);
+      setSaveDirectoryPath((prev) => (prev.trim() ? prev : handle.name));
       setError(null);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
@@ -168,8 +169,14 @@ export default function App() {
       return;
     }
     try {
+      const directoryPath = saveDirectoryPath.trim() || saveDirectoryRef.current.name;
+      const postsForExcel = savedResults.map((post) => ({
+        ...post,
+        captureFilePath: joinDirectoryPath(directoryPath, getCaptureFilename(post.captureFilePath)),
+      }));
       await saveCapturesToDirectory(saveDirectoryRef.current, savedResults);
-      await exportCrimeListExcel(savedResults, saveDirectoryRef.current);
+      await exportCrimeListExcel(postsForExcel, saveDirectoryRef.current);
+      setSavedResults(postsForExcel);
       setError(null);
       window.alert('저장이 완료됐습니다.');
     } catch (e) {
@@ -203,9 +210,9 @@ export default function App() {
               id="save-directory"
               className="save-directory-input"
               type="text"
-              readOnly
-              placeholder="폴더 선택으로 저장 위치를 지정하세요"
-              value={saveDirectoryLabel}
+              placeholder="C:\Users\HP\Desktop\증거자료"
+              value={saveDirectoryPath}
+              onChange={(e) => setSaveDirectoryPath(e.target.value)}
             />
             <button
               type="button"
@@ -217,7 +224,7 @@ export default function App() {
             </button>
           </div>
           <p className="field-hint">
-            Windows·macOS 기본 폴더 선택 창이 열립니다. Chrome 또는 Edge에서 사용해 주세요.
+            폴더 선택으로 파일을 저장합니다. 엑셀에 전체 경로(예: C:\Users\HP\Desktop\증거자료)를 기록하려면 입력란에 직접 입력하세요.
           </p>
 
           <div className="button-row">

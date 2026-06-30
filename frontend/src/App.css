@@ -74,8 +74,6 @@
 .save-directory-row .save-directory-input {
   flex: 1;
   min-width: 0;
-  background: #f8fafc;
-  cursor: default;
 }
 
 .save-directory-row .btn {

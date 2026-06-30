@@ -1,4 +1,5 @@
 import type { DcinsidePostData } from './types';
+import { getCaptureFilename } from './pathUtils';
 import { writeBlobToDirectory } from './localFileStorage';
 
 function base64ToBlob(base64: string): Blob {
@@ -18,7 +19,8 @@ export async function saveCapturesToDirectory(
     if (!post.captureImageBase64 || !post.captureFilePath) {
       throw new Error(`캡처 이미지가 없습니다: ${post.url}`);
     }
+    const filename = getCaptureFilename(post.captureFilePath);
     const blob = base64ToBlob(post.captureImageBase64);
-    await writeBlobToDirectory(directory, post.captureFilePath, blob);
+    await writeBlobToDirectory(directory, filename, blob);
   }
 }
