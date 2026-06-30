@@ -18,6 +18,6 @@ public record DcinsidePostData(
         int viewCount,
         int commentCount,
         @JsonIgnore String postNo,
-        @JsonIgnore List<CommentData> comments
+        List<CommentData> comments
 ) {
 }

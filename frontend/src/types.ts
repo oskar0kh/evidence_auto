@@ -1,3 +1,13 @@
+export interface CommentData {
+  no: string;
+  name: string;
+  userId: string;
+  ip: string;
+  memo: string;
+  regDate: string;
+  isDelete: string;
+}
+
 export interface DcinsidePostData {
   url: string;
   postDate: string;
@@ -10,6 +20,7 @@ export interface DcinsidePostData {
   captureImageBase64: string;
   viewCount: number;
   commentCount: number;
+  comments: CommentData[];
 }
 
 export interface CrawlResponse {

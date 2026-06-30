@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { extractCommentsSection } from './commentSection';
 import { writeArrayBufferToDirectory } from './localFileStorage';
 import type { DcinsidePostData } from './types';
 
@@ -7,12 +8,16 @@ const COLUMNS = [
   { header: '게시일자', key: 'postDate', width: 22 },
   { header: '닉네임', key: 'nickname', width: 18 },
   { header: 'URL', key: 'url', width: 50 },
-  { header: '원글 내용(댓글) 또는 게시글 제목(게시글)', key: 'title', width: 40 },
+  { header: '게시글 제목', key: 'title', width: 40 },
   { header: '내용', key: 'content', width: 80 },
+  { header: '댓글 작성자·내용·일시', key: 'commentSection', width: 60 },
   { header: '죄명', key: 'crimeType', width: 20 },
   { header: '비고', key: 'remarks', width: 40 },
   { header: '연번표시 캡처파일 (캡처파일 디렉토리)', key: 'captureFile', width: 45 },
 ] as const;
+
+const CONTENT_COLUMN = 6;
+const CAPTURE_COLUMN = 10;
 
 const HEADER_FILL = {
   type: 'pattern' as const,
@@ -37,7 +42,6 @@ const CAPTURE_HEADER_FILL = {
   pattern: 'solid' as const,
   fgColor: { argb: 'FFBDD7EE' },
 };
-
 
 export async function exportCrimeListExcel(
   posts: DcinsidePostData[],
@@ -67,7 +71,7 @@ export async function exportCrimeListExcel(
   headerRow.eachCell((cell, colNumber) => {
     cell.font = HEADER_FONT;
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-    if (colNumber === 9) {
+    if (colNumber === CAPTURE_COLUMN) {
       cell.fill = CAPTURE_HEADER_FILL;
     } else {
       cell.fill = HEADER_FILL;
@@ -82,6 +86,7 @@ export async function exportCrimeListExcel(
 
   posts.forEach((post, index) => {
     const serial = index + 1;
+    const commentSection = extractCommentsSection(post.content);
 
     const row = sheet.getRow(index + 3);
     row.values = [
@@ -91,6 +96,7 @@ export async function exportCrimeListExcel(
       post.url,
       post.title,
       post.content,
+      commentSection,
       post.crimeType || '',
       post.remarks,
       post.captureFilePath,
@@ -105,7 +111,7 @@ export async function exportCrimeListExcel(
         bottom: { style: 'thin' },
         right: { style: 'thin' },
       };
-      if (colNumber === 6) {
+      if (colNumber === CONTENT_COLUMN) {
         cell.fill = CONTENT_HIGHLIGHT;
       }
     });
