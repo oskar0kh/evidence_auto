@@ -510,13 +510,9 @@ public class DcinsideCrawlService {
 
     // 범죄일람표 '비고'란 빌드
     private String buildRemarks(int viewCount, int commentCount, String captureFilename) {
-        return "강한 근거어 : \n"
-                + "조회수 : " + viewCount + "\n"
+        return "조회수 : " + viewCount + "\n"
                 + "댓글 수 : " + commentCount + "\n"
-                + "증거자료(캡처파일) : " + captureFilename + "\n"
-                + "공연성 사유 : \n"
-                + "특정성 사유 : \n"
-                + "사실 적시 사유 : ";
+                + "증거자료(캡처파일) : " + captureFilename + "\n";
     }
 
     // URL 정규화
