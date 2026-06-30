@@ -10,7 +10,6 @@ public record DcinsidePostData(
         String nickname,
         String title,
         @JsonIgnore String body,
-        String writeType,
         String content,
         String crimeType,
         String remarks,

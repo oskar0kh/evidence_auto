@@ -289,10 +289,6 @@ export default function App() {
                       <dd>{post.postDate}</dd>
                     </div>
                     <div>
-                      <dt>작성 형태</dt>
-                      <dd>{post.writeType}</dd>
-                    </div>
-                    <div>
                       <dt>조회수 / 댓글</dt>
                       <dd>
                         {post.viewCount} / {post.commentCount}

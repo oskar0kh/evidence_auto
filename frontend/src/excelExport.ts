@@ -7,7 +7,6 @@ const COLUMNS = [
   { header: '게시일자', key: 'postDate', width: 22 },
   { header: '닉네임', key: 'nickname', width: 18 },
   { header: 'URL', key: 'url', width: 50 },
-  { header: '작성 형태(게시글/댓글)', key: 'writeType', width: 18 },
   { header: '원글 내용(댓글) 또는 게시글 제목(게시글)', key: 'title', width: 40 },
   { header: '내용', key: 'content', width: 80 },
   { header: '죄명', key: 'crimeType', width: 20 },
@@ -68,7 +67,7 @@ export async function exportCrimeListExcel(
   headerRow.eachCell((cell, colNumber) => {
     cell.font = HEADER_FONT;
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-    if (colNumber === 10) {
+    if (colNumber === 9) {
       cell.fill = CAPTURE_HEADER_FILL;
     } else {
       cell.fill = HEADER_FILL;
@@ -90,7 +89,6 @@ export async function exportCrimeListExcel(
       post.postDate,
       post.nickname,
       post.url,
-      post.writeType,
       post.title,
       post.content,
       post.crimeType || '',
@@ -107,7 +105,7 @@ export async function exportCrimeListExcel(
         bottom: { style: 'thin' },
         right: { style: 'thin' },
       };
-      if (colNumber === 7) {
+      if (colNumber === 6) {
         cell.fill = CONTENT_HIGHLIGHT;
       }
     });

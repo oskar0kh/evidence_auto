@@ -105,9 +105,8 @@ public class DcinsideCrawlService {
         int realCommentCount = countRealComments(comments);
         int commentCount = comments.isEmpty() ? commentCountFromLd : realCommentCount;
 
-        // 작성자 정보, 작성 타입, 내용 추출
+        // 작성자 정보, 내용 추출
         String nickname = formatDisplayNickname(writer.nick(), writer.ip(), writer.uid());
-        String writeType = realCommentCount > 0 ? "게시글 + 댓글" : "게시글";
         String content = buildContent(title, body, comments);
 
         // 게시글 데이터 반환
@@ -117,7 +116,6 @@ public class DcinsideCrawlService {
                 nickname,
                 title,
                 body,
-                writeType,
                 content,
                 "",
                 "",
@@ -141,7 +139,6 @@ public class DcinsideCrawlService {
                 data.nickname(),
                 data.title(),
                 data.body(),
-                data.writeType(),
                 data.content(),
                 data.crimeType(),
                 remarks,

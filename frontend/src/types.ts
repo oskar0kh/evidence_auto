@@ -3,7 +3,6 @@ export interface DcinsidePostData {
   postDate: string;
   nickname: string;
   title: string;
-  writeType: string;
   content: string;
   crimeType: string;
   remarks: string;
