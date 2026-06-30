@@ -78,10 +78,6 @@ export default function App() {
       setError('디시인사이드 게시글 URL을 입력해 주세요.');
       return;
     }
-    if (!saveDirectoryRef.current) {
-      setError('저장 폴더를 선택해 주세요.');
-      return;
-    }
 
     setLoading(true);
     setError(null);
@@ -113,12 +109,8 @@ export default function App() {
           const startSerial = savedResults.length + successCount + 1;
           const response = await crawlDcinside([url], startSerial);
           if (response.data.length > 0) {
-            const savedPosts = await saveCapturesToDirectory(
-              saveDirectoryRef.current,
-              response.data
-            );
-            successCount += savedPosts.length;
-            setSavedResults((prev) => mergeSavedResults(prev, savedPosts));
+            successCount += response.data.length;
+            setSavedResults((prev) => mergeSavedResults(prev, response.data));
           }
           batchErrors.push(...response.errors);
         } catch (e) {
@@ -166,9 +158,9 @@ export default function App() {
         )
       : 0;
 
-  const handleDownload = async () => {
+  const handleSaveExcel = async () => {
     if (savedResults.length === 0) {
-      setError('다운로드할 데이터가 없습니다. 먼저 크롤링을 실행해 주세요.');
+      setError('저장할 데이터가 없습니다. 먼저 크롤링을 실행해 주세요.');
       return;
     }
     if (!saveDirectoryRef.current) {
@@ -176,9 +168,9 @@ export default function App() {
       return;
     }
     try {
-      const savedPath = await exportCrimeListExcel(savedResults, saveDirectoryRef.current);
+      await saveCapturesToDirectory(saveDirectoryRef.current, savedResults);
+      await exportCrimeListExcel(savedResults, saveDirectoryRef.current);
       setError(null);
-      window.alert(`엑셀 파일이 저장되었습니다.\n${savedPath}`);
     } catch (e) {
       const message = e instanceof Error ? e.message : '엑셀 생성 중 오류가 발생했습니다.';
       setError(message);
@@ -189,7 +181,7 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>범죄일람표 크롤러</h1>
-        <p>크롤링할 때마다 결과가 누적 저장되며, 엑셀 다운로드 시 저장된 전체 항목이 한 파일로 출력됩니다.</p>
+        <p>크롤링 결과는 화면에 누적되며, 범죄일람표·캡처 저장 시 선택한 폴더에 파일이 저장됩니다.</p>
       </header>
 
       <main className="app-main">
@@ -234,10 +226,10 @@ export default function App() {
             <button
               type="button"
               className="btn secondary"
-              onClick={handleDownload}
+              onClick={handleSaveExcel}
               disabled={loading || savedResults.length === 0}
             >
-              엑셀 다운로드
+              범죄일람표, 캡처화면 저장
             </button>
             <span className="saved-count">현재까지 저장된 링크 개수: {savedResults.length}</span>
           </div>
