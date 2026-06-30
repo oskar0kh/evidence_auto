@@ -1,4 +1,5 @@
 import ExcelJS from 'exceljs';
+import { writeArrayBufferToDirectory } from './localFileStorage';
 import type { DcinsidePostData } from './types';
 
 const COLUMNS = [
@@ -39,7 +40,10 @@ const CAPTURE_HEADER_FILL = {
 };
 
 
-export async function exportCrimeListExcel(posts: DcinsidePostData[]): Promise<void> {
+export async function exportCrimeListExcel(
+  posts: DcinsidePostData[],
+  directory: FileSystemDirectoryHandle
+): Promise<string> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = '범죄일람표 크롤러';
   const sheet = workbook.addWorksheet('범죄일람표', {
@@ -110,15 +114,21 @@ export async function exportCrimeListExcel(posts: DcinsidePostData[]): Promise<v
   });
 
   const buffer = await workbook.xlsx.writeBuffer();
+  const now = new Date();
+  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
+  const filename = `범죄일람표_${stamp}.xlsx`;
+
+  await writeArrayBufferToDirectory(directory, filename, buffer as ArrayBuffer);
+
   const blob = new Blob([buffer], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
   });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
-  const now = new Date();
-  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
   link.href = url;
-  link.download = `범죄일람표_${stamp}.xlsx`;
+  link.download = filename;
   link.click();
   URL.revokeObjectURL(url);
+
+  return `${directory.name}/${filename}`;
 }

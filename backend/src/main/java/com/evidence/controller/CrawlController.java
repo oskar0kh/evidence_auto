@@ -3,6 +3,7 @@ package com.evidence.controller;
 import com.evidence.dto.CrawlRequest;
 import com.evidence.dto.DcinsidePostData;
 import com.evidence.service.DcinsideCrawlService;
+import com.evidence.service.SaveDirectoryResolver;
 import com.evidence.service.ScreenshotService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -28,10 +29,16 @@ public class CrawlController {
 
     private final DcinsideCrawlService crawlService;
     private final ScreenshotService screenshotService;
+    private final SaveDirectoryResolver saveDirectoryResolver;
 
-    public CrawlController(DcinsideCrawlService crawlService, ScreenshotService screenshotService) {
+    public CrawlController(
+            DcinsideCrawlService crawlService,
+            ScreenshotService screenshotService,
+            SaveDirectoryResolver saveDirectoryResolver
+    ) {
         this.crawlService = crawlService;
         this.screenshotService = screenshotService;
+        this.saveDirectoryResolver = saveDirectoryResolver;
     }
 
     // 디시인사이드 게시글 크롤링
@@ -44,6 +51,20 @@ public class CrawlController {
         List<DcinsidePostData> results = new ArrayList<>();
         List<Map<String, String>> errors = new ArrayList<>();
 
+        Path saveDir;
+        try {
+            saveDir = saveDirectoryResolver.resolve(request.saveDirectory());
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.warn("Invalid save directory: {}", e.getMessage());
+            return ResponseEntity.badRequest().body(Map.of(
+                    "error",
+                    e.getMessage() != null ? e.getMessage() : "저장 경로를 확인할 수 없습니다."
+            ));
+        }
+
+        // 디시인사이드 게시글 크롤링
         for (String url : request.urls()) {
             String trimmed = url == null ? "" : url.trim();
             if (trimmed.isEmpty()) {
@@ -51,9 +72,11 @@ public class CrawlController {
             }
             try {
                 DcinsidePostData crawled = crawlService.crawl(trimmed);
-                int excelRowNumber = results.size() + 1;
+                int excelRowNumber = request.startSerial() != null
+                        ? request.startSerial() + results.size()
+                        : results.size() + 1;
                 String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
-                Path captureFile = screenshotService.captureFullPage(trimmed, excelRowNumber, postNo);
+                Path captureFile = screenshotService.captureFullPage(trimmed, excelRowNumber, postNo, saveDir);
                 results.add(crawlService.attachCapture(crawled, excelRowNumber, captureFile));
             } catch (Exception e) {
                 log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());

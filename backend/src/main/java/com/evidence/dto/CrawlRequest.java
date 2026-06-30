@@ -2,5 +2,8 @@ package com.evidence.dto;
 
 import java.util.List;
 
-public record CrawlRequest(List<String> urls) {
+public record CrawlRequest(
+        List<String> urls,
+        Integer startSerial
+) {
 }

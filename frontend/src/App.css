@@ -49,18 +49,48 @@
   margin-bottom: 0.5rem;
 }
 
-.url-input {
+.url-input,
+.save-directory-input {
   width: 100%;
   padding: 0.875rem 1rem;
   border: 1px solid #d1d9e6;
   border-radius: 10px;
   font-size: 0.95rem;
   font-family: inherit;
-  margin-bottom: 1.25rem;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 
-.url-input:focus {
+.url-input {
+  margin-bottom: 0.5rem;
+}
+
+.save-directory-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: stretch;
+  margin-bottom: 0.5rem;
+}
+
+.save-directory-row .save-directory-input {
+  flex: 1;
+  min-width: 0;
+  background: #f8fafc;
+  cursor: default;
+}
+
+.save-directory-row .btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.field-hint {
+  margin: 0 0 1.25rem;
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.url-input:focus,
+.save-directory-input:focus {
   outline: none;
   border-color: #3b82f6;
   box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);

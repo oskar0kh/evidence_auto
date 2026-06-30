@@ -84,13 +84,12 @@ public class ScreenshotService {
     }
 
     // 스크린샷 전체 페이지 캡처
-    public Path captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
-        
-        // 캡처 파일 이름 생성
+    public Path captureFullPage(String url, int excelRowNumber, String postNo, Path saveDirectory) throws Exception {
+        Path targetDir = saveDirectory != null ? saveDirectory : outputDir;
+        Files.createDirectories(targetDir);
+
         String filename = formatFilename(excelRowNumber, postNo);
-        
-        // 캡처 파일 경로 생성
-        Path filePath = outputDir.resolve(filename);
+        Path filePath = targetDir.resolve(filename);
         
         // 캡처 락 획득
         synchronized (captureLock) {

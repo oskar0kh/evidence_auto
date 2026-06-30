@@ -1,7 +1,9 @@
 import axios from 'axios';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { crawlDcinside } from './api';
+import { saveCapturesToDirectory } from './captureFiles';
 import { exportCrimeListExcel } from './excelExport';
+import { isNativeFolderPickerSupported, pickNativeDirectory } from './nativeFolderPicker';
 import type { DcinsidePostData } from './types';
 import './App.css';
 
@@ -42,16 +44,42 @@ interface CrawlProgress {
 
 export default function App() {
   const [urlInput, setUrlInput] = useState('');
+  const saveDirectoryRef = useRef<FileSystemDirectoryHandle | null>(null);
+  const [saveDirectoryLabel, setSaveDirectoryLabel] = useState('');
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<CrawlProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedResults, setSavedResults] = useState<DcinsidePostData[]>([]);
   const [errors, setErrors] = useState<{ url: string; error: string }[]>([]);
 
+  const handlePickDirectory = async () => {
+    if (!isNativeFolderPickerSupported()) {
+      setError('시스템 폴더 선택은 Chrome 또는 Edge에서만 지원됩니다.');
+      return;
+    }
+
+    try {
+      const handle = await pickNativeDirectory();
+      saveDirectoryRef.current = handle;
+      setSaveDirectoryLabel(handle.name);
+      setError(null);
+    } catch (e) {
+      if (e instanceof DOMException && e.name === 'AbortError') {
+        return;
+      }
+      const message = e instanceof Error ? e.message : '폴더를 선택할 수 없습니다.';
+      setError(message);
+    }
+  };
+
   const handleCrawl = async () => {
     const urls = parseUrls(urlInput);
     if (urls.length === 0) {
       setError('디시인사이드 게시글 URL을 입력해 주세요.');
+      return;
+    }
+    if (!saveDirectoryRef.current) {
+      setError('저장 폴더를 선택해 주세요.');
       return;
     }
 
@@ -82,10 +110,15 @@ export default function App() {
         });
 
         try {
-          const response = await crawlDcinside([url]);
+          const startSerial = savedResults.length + successCount + 1;
+          const response = await crawlDcinside([url], startSerial);
           if (response.data.length > 0) {
-            successCount += response.data.length;
-            setSavedResults((prev) => mergeSavedResults(prev, response.data));
+            const savedPosts = await saveCapturesToDirectory(
+              saveDirectoryRef.current,
+              response.data
+            );
+            successCount += savedPosts.length;
+            setSavedResults((prev) => mergeSavedResults(prev, savedPosts));
           }
           batchErrors.push(...response.errors);
         } catch (e) {
@@ -138,8 +171,14 @@ export default function App() {
       setError('다운로드할 데이터가 없습니다. 먼저 크롤링을 실행해 주세요.');
       return;
     }
+    if (!saveDirectoryRef.current) {
+      setError('저장 폴더를 선택해 주세요.');
+      return;
+    }
     try {
-      await exportCrimeListExcel(savedResults);
+      const savedPath = await exportCrimeListExcel(savedResults, saveDirectoryRef.current);
+      setError(null);
+      window.alert(`엑셀 파일이 저장되었습니다.\n${savedPath}`);
     } catch (e) {
       const message = e instanceof Error ? e.message : '엑셀 생성 중 오류가 발생했습니다.';
       setError(message);
@@ -164,6 +203,29 @@ export default function App() {
             onChange={(e) => setUrlInput(e.target.value)}
             rows={4}
           />
+
+          <label htmlFor="save-directory">저장 폴더 (캡처·엑셀)</label>
+          <div className="save-directory-row">
+            <input
+              id="save-directory"
+              className="save-directory-input"
+              type="text"
+              readOnly
+              placeholder="폴더 선택으로 저장 위치를 지정하세요"
+              value={saveDirectoryLabel}
+            />
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={() => void handlePickDirectory()}
+              disabled={loading}
+            >
+              폴더 선택
+            </button>
+          </div>
+          <p className="field-hint">
+            Windows·macOS 기본 폴더 선택 창이 열립니다. Chrome 또는 Edge에서 사용해 주세요.
+          </p>
 
           <div className="button-row">
             <button type="button" className="btn primary" onClick={handleCrawl} disabled={loading}>
