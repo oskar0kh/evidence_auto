@@ -294,28 +294,64 @@ public class ScreenshotService {
         List<byte[]> segments = new ArrayList<>();
         segments.add(captureRegionScreenshot(driver, captureTarget, postNo));
 
-        int stitchedHeight = getImageHeight(segments.get(0));
         for (int page : commentPages) {
             if (page == 1) {
                 continue;
             }
             goToCommentPage(driver, postNo, page);
             waitForCommentPage(driver, postNo, page);
-            byte[] commentSegment = captureCommentPageScreenshot(driver, postNo);
-            int nextHeight = stitchedHeight + getImageHeight(commentSegment);
-            if (nextHeight > MAX_STITCHED_HEIGHT) {
-                log.warn("댓글 캡처 높이 한도({}px) 초과 — {}페이지부터 생략", MAX_STITCHED_HEIGHT, page);
-                break;
-            }
-            segments.add(commentSegment);
-            stitchedHeight = nextHeight;
+            segments.add(captureCommentPageScreenshot(driver, postNo));
         }
 
         if (segments.size() == 1) {
             return segments.get(0);
         }
-        log.info("댓글 {}페이지 캡처 후 이미지 병합 (총 {}장)", commentPages.size(), segments.size());
-        return stitchVertically(segments);
+
+        List<List<byte[]>> columns = distributeIntoColumns(segments);
+        log.info(
+                "댓글 {}페이지 캡처 후 {}열로 이미지 병합 (총 {}장)",
+                commentPages.size(),
+                columns.size(),
+                segments.size()
+        );
+        return stitchColumns(columns);
+    }
+
+    private List<List<byte[]>> distributeIntoColumns(List<byte[]> segments) throws IOException {
+        List<List<byte[]>> columns = new ArrayList<>();
+        List<byte[]> currentColumn = new ArrayList<>();
+        int currentColumnHeight = 0;
+
+        for (byte[] segment : segments) {
+            int segmentHeight = getImageHeight(segment);
+            if (!currentColumn.isEmpty() && currentColumnHeight + segmentHeight > MAX_STITCHED_HEIGHT) {
+                columns.add(currentColumn);
+                currentColumn = new ArrayList<>();
+                currentColumnHeight = 0;
+            }
+            currentColumn.add(segment);
+            currentColumnHeight += segmentHeight;
+        }
+
+        if (!currentColumn.isEmpty()) {
+            columns.add(currentColumn);
+        }
+        return columns;
+    }
+
+    private byte[] stitchColumns(List<List<byte[]>> columns) throws IOException {
+        if (columns.isEmpty()) {
+            throw new IOException("병합할 캡처 열이 없습니다.");
+        }
+        if (columns.size() == 1) {
+            return stitchVertically(columns.get(0));
+        }
+
+        List<byte[]> columnImages = new ArrayList<>();
+        for (List<byte[]> column : columns) {
+            columnImages.add(column.size() == 1 ? column.get(0) : stitchVertically(column));
+        }
+        return stitchHorizontally(columnImages);
     }
 
     @SuppressWarnings("unchecked")
@@ -481,14 +517,18 @@ public class ScreenshotService {
         return Base64.getDecoder().decode(base64);
     }
 
-    private int getImageHeight(byte[] pngBytes) throws IOException {
+    private BufferedImage readBufferedImage(byte[] pngBytes) throws IOException {
         try (ByteArrayInputStream input = new ByteArrayInputStream(pngBytes)) {
             BufferedImage image = ImageIO.read(input);
             if (image == null) {
                 throw new IOException("PNG 이미지를 읽을 수 없습니다.");
             }
-            return image.getHeight();
+            return image;
         }
+    }
+
+    private int getImageHeight(byte[] pngBytes) throws IOException {
+        return readBufferedImage(pngBytes).getHeight();
     }
 
     private byte[] stitchVertically(List<byte[]> segments) throws IOException {
@@ -496,15 +536,10 @@ public class ScreenshotService {
         int totalWidth = 0;
         int totalHeight = 0;
         for (byte[] segment : segments) {
-            try (ByteArrayInputStream input = new ByteArrayInputStream(segment)) {
-                BufferedImage image = ImageIO.read(input);
-                if (image == null) {
-                    throw new IOException("병합할 PNG 이미지를 읽을 수 없습니다.");
-                }
-                images.add(image);
-                totalWidth = Math.max(totalWidth, image.getWidth());
-                totalHeight += image.getHeight();
-            }
+            BufferedImage image = readBufferedImage(segment);
+            images.add(image);
+            totalWidth = Math.max(totalWidth, image.getWidth());
+            totalHeight += image.getHeight();
         }
 
         BufferedImage combined = new BufferedImage(totalWidth, totalHeight, BufferedImage.TYPE_INT_RGB);
@@ -516,6 +551,34 @@ public class ScreenshotService {
         for (BufferedImage image : images) {
             graphics.drawImage(image, 0, y, null);
             y += image.getHeight();
+        }
+        graphics.dispose();
+
+        ByteArrayOutputStream output = new ByteArrayOutputStream();
+        ImageIO.write(combined, "png", output);
+        return output.toByteArray();
+    }
+
+    private byte[] stitchHorizontally(List<byte[]> columnImages) throws IOException {
+        List<BufferedImage> images = new ArrayList<>();
+        int totalWidth = 0;
+        int totalHeight = 0;
+        for (byte[] columnImage : columnImages) {
+            BufferedImage image = readBufferedImage(columnImage);
+            images.add(image);
+            totalWidth += image.getWidth();
+            totalHeight = Math.max(totalHeight, image.getHeight());
+        }
+
+        BufferedImage combined = new BufferedImage(totalWidth, totalHeight, BufferedImage.TYPE_INT_RGB);
+        Graphics2D graphics = combined.createGraphics();
+        graphics.setColor(java.awt.Color.WHITE);
+        graphics.fillRect(0, 0, totalWidth, totalHeight);
+
+        int x = 0;
+        for (BufferedImage image : images) {
+            graphics.drawImage(image, x, 0, null);
+            x += image.getWidth();
         }
         graphics.dispose();
 
