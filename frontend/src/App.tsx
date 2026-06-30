@@ -109,6 +109,7 @@ export default function App() {
     } finally {
       setLoading(false);
       setProgress(null);
+      setUrlInput('');
     }
   };
 
