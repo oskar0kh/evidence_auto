@@ -101,6 +101,10 @@
   align-items: center;
 }
 
+.crawl-status {
+  margin-top: 0.5rem;
+}
+
 .saved-count {
   font-size: 0.9rem;
   font-weight: 600;

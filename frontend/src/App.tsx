@@ -273,12 +273,14 @@ export default function App() {
               범죄일람표, 캡처화면 저장
             </button>
             <span className="saved-count">현재까지 저장된 링크 개수: {savedResults.length}</span>
-            {lastCrawlDurationMs !== null && !loading && (
-              <span className="crawl-timer-summary">
-                마지막 수집 시간: {formatDuration(lastCrawlDurationMs)}
-              </span>
-            )}
           </div>
+          {lastCrawlDurationMs !== null && !loading && (
+            <div className="crawl-status">
+              <span className="crawl-timer-summary">
+                수집 시간: {formatDuration(lastCrawlDurationMs)}
+              </span>
+            </div>
+          )}
 
           {loading && progress && (
             <div className="progress-panel" aria-live="polite">
