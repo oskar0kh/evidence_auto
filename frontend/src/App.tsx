@@ -171,6 +171,7 @@ export default function App() {
       await saveCapturesToDirectory(saveDirectoryRef.current, savedResults);
       await exportCrimeListExcel(savedResults, saveDirectoryRef.current);
       setError(null);
+      window.alert('저장이 완료됐습니다.');
     } catch (e) {
       const message = e instanceof Error ? e.message : '엑셀 생성 중 오류가 발생했습니다.';
       setError(message);
