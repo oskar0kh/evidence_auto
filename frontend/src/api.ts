@@ -33,7 +33,6 @@ export async function crawlDcinside(
 ): Promise<CrawlResponse> {
   const { data } = await api.post<CrawlResponse>('/crawl/dcinside', {
     urls,
-    saveDirectory: null,
     startSerial: startSerial ?? null,
   });
   return data;

@@ -84,12 +84,11 @@ public class ScreenshotService {
     }
 
     // 스크린샷 전체 페이지 캡처
-    public Path captureFullPage(String url, int excelRowNumber, String postNo, Path saveDirectory) throws Exception {
-        Path targetDir = saveDirectory != null ? saveDirectory : outputDir;
-        Files.createDirectories(targetDir);
+    public Path captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
+        Files.createDirectories(outputDir);
 
         String filename = formatFilename(excelRowNumber, postNo);
-        Path filePath = targetDir.resolve(filename);
+        Path filePath = outputDir.resolve(filename);
         
         // 캡처 락 획득
         synchronized (captureLock) {
@@ -161,17 +160,10 @@ public class ScreenshotService {
         throw new IllegalArgumentException("URL에서 게시글 번호(no)를 찾을 수 없습니다: " + url);
     }
 
-    // 캡처 파일 상대 경로 생성
-    public String toRelativePath(String filename) {
-        return CAPTURE_DIR_NAME + "/" + filename;
-    }
-
-    // 캡처 파일 출력 디렉토리 반환
     public Path getOutputDir() {
         return outputDir;
     }
 
-    // 웹 드라이버 설정
     private void setupChromeDriver(String binary) {
         String majorVersion = detectChromeMajorVersion(binary);
         WebDriverManager manager = WebDriverManager.chromedriver();

@@ -105,7 +105,7 @@ public class DcinsideCrawlService {
         int commentCount = comments.isEmpty() ? commentCountFromLd : realCommentCount;
 
         // 작성자 정보, 작성 타입, 내용 추출
-        String nickname = formatNickname(writer.nick(), writer.ip(), writer.uid());
+        String nickname = formatDisplayNickname(writer.nick(), writer.ip(), writer.uid());
         String writeType = realCommentCount > 0 ? "게시글 + 댓글" : "게시글";
         String content = buildContent(title, body, comments);
 
@@ -128,17 +128,10 @@ public class DcinsideCrawlService {
         );
     }
 
-    // 캡처 파일 첨부
-    public DcinsidePostData attachCapture(DcinsidePostData data, int serial, Path captureFile) {
+    public DcinsidePostData attachCapture(DcinsidePostData data, Path captureFile) {
         String filename = captureFile.getFileName().toString();
-        
-        // 비고 추출
         String remarks = buildRemarks(data.viewCount(), data.commentCount(), filename);
-        
-        // 캡처 파일 경로 추출
-        String absolutePath = captureFile.toAbsolutePath().toString();
 
-        // 게시글 데이터 반환
         return new DcinsidePostData(
                 data.url(),
                 data.postDate(),
@@ -149,7 +142,7 @@ public class DcinsideCrawlService {
                 data.content(),
                 data.crimeType(),
                 remarks,
-                absolutePath,
+                filename,
                 data.viewCount(),
                 data.commentCount(),
                 data.postNo(),
@@ -401,32 +394,26 @@ public class DcinsideCrawlService {
                 .count();
     }
 
-    // 범죄일람표 '내용'란 닉네임 포맷팅
-    private String formatNickname(String nick, String ip, String uid) {
-        return formatDisplayNickname(nick, ip, uid);
-    }
-
-    // 범죄일람표 '내용'란 속 댓글 닉네임 포맷팅
-    private String formatCommentNickname(String name, String ip, String userId) {
-        return formatDisplayNickname(name, ip, userId);
-    }
-
     /**
      * 닉네임 생성 메서드
-     * IP 있을 때(유동): 닉네임(IP) 구조 / ex: ㅇㅇ(118.36)
-     * IP 없을 때(반고닉/고닉): 닉네임(식별번호) 구조 / ex: hello(bowldf1445)
+     * IP 있을 때(유동): 닉네임(IP) 구조 / ex: ㅇㅇ(118.35)
+     * IP 없을 때(반고닉/고닉): 닉네임(식별번호) 구조 / ex: hello(bowld4333)
      */
     private String formatDisplayNickname(String nick, String ip, String uid) {
         if (nick == null || nick.isBlank()) {
             return "";
         }
-        if (ip != null && !ip.isBlank()) { // 유동
+        if (ip != null && !ip.isBlank()) {
             return nick + "(" + ip + ")";
         }
-        if (uid != null && !uid.isBlank()) { // 반고닉/고닉
+        if (uid != null && !uid.isBlank()) {
             return nick + "(" + uid + ")";
         }
         return nick;
+    }
+
+    private String formatCommentNickname(String name, String ip, String userId) {
+        return formatDisplayNickname(name, ip, userId);
     }
 
     // 범죄일람표 '내용'란 빌드
@@ -441,7 +428,7 @@ public class DcinsideCrawlService {
                 if ("1".equals(c.isDelete())) {
                     continue;
                 }
-                String nick = formatCommentNickname(c.name(), c.ip(), c.userId()); // 댓글 형식대로 생성
+                String nick = formatCommentNickname(c.name(), c.ip(), c.userId());
                 String memo = c.memo() == null ? "" : c.memo();
                 String date = c.regDate() == null ? "" : c.regDate();
                 sb.append("\n[댓글 ").append(index).append("] ")
@@ -455,11 +442,11 @@ public class DcinsideCrawlService {
     }
 
     // 범죄일람표 '비고'란 빌드
-    public String buildRemarks(int viewCount, int commentCount, String captureRelativePath) {
+    private String buildRemarks(int viewCount, int commentCount, String captureFilename) {
         return "강한 근거어 : \n"
                 + "조회수 : " + viewCount + "\n"
                 + "댓글 수 : " + commentCount + "\n"
-                + "증거자료(캡처파일) : " + captureRelativePath + "\n"
+                + "증거자료(캡처파일) : " + captureFilename + "\n"
                 + "공연성 사유 : \n"
                 + "특정성 사유 : \n"
                 + "사실 적시 사유 : ";

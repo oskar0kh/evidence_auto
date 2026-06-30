@@ -64,11 +64,6 @@ public final class TrackingDomainBlocker {
     private TrackingDomainBlocker() {
     }
 
-    public static List<String> blockedUrlPatterns() {
-        return BLOCKED_URL_PATTERNS;
-    }
-
-    // 광고/트래킹 도메인 차단 적용
     public static void apply(ChromeDriver driver) {
         try {
             driver.executeCdpCommand("Network.enable", Map.of());

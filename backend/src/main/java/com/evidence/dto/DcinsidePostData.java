@@ -1,5 +1,7 @@
 package com.evidence.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
+
 import java.util.List;
 
 public record DcinsidePostData(
@@ -7,7 +9,7 @@ public record DcinsidePostData(
         String postDate,
         String nickname,
         String title,
-        String body,
+        @JsonIgnore String body,
         String writeType,
         String content,
         String crimeType,
@@ -15,7 +17,7 @@ public record DcinsidePostData(
         String captureFilePath,
         int viewCount,
         int commentCount,
-        String postNo,
-        List<CommentData> comments
+        @JsonIgnore String postNo,
+        @JsonIgnore List<CommentData> comments
 ) {
 }

@@ -120,15 +120,5 @@ export async function exportCrimeListExcel(
 
   await writeArrayBufferToDirectory(directory, filename, buffer as ArrayBuffer);
 
-  const blob = new Blob([buffer], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
-
   return `${directory.name}/${filename}`;
 }

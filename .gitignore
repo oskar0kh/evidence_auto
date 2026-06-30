@@ -29,3 +29,6 @@ captured_page/
 .env
 .env.local
 backend/google-chrome-stable_current_amd64.deb
+
+# TypeScript
+*.tsbuildinfo

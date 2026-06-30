@@ -1,6 +1,6 @@
 package com.evidence.controller;
 
-import com.evidence.service.SaveDirectoryResolver;
+import com.evidence.service.ScreenshotService;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
 import org.springframework.http.HttpHeaders;
@@ -23,10 +23,10 @@ public class FileController {
     private static final Pattern SAFE_CAPTURE_FILENAME =
             Pattern.compile("^연번 \\d{3}_post_\\d+\\.png$");
 
-    private final SaveDirectoryResolver saveDirectoryResolver;
+    private final ScreenshotService screenshotService;
 
-    public FileController(SaveDirectoryResolver saveDirectoryResolver) {
-        this.saveDirectoryResolver = saveDirectoryResolver;
+    public FileController(ScreenshotService screenshotService) {
+        this.screenshotService = screenshotService;
     }
 
     @GetMapping("/captures/{filename}")
@@ -36,7 +36,7 @@ public class FileController {
         }
 
         try {
-            Path directory = saveDirectoryResolver.resolve(null);
+            Path directory = screenshotService.getOutputDir();
             Path filePath = directory.resolve(filename).normalize();
             if (!filePath.startsWith(directory) || !Files.isRegularFile(filePath)) {
                 return ResponseEntity.notFound().build();
