@@ -132,7 +132,20 @@ public class DcinsideCrawlService {
 
     public DcinsidePostData attachCapture(DcinsidePostData data, CaptureImage capture) {
         String filename = capture.filename();
-        String remarks = buildRemarks(data.viewCount(), data.commentCount(), filename);
+        int deletedCommentCount = countDeletedComments(data.comments());
+        int collectedCommentCount = countRealComments(data.comments());
+        int totalCommentCount = collectedCommentCount + deletedCommentCount;
+        if (totalCommentCount == 0) {
+            totalCommentCount = data.commentCount();
+            collectedCommentCount = data.commentCount();
+        }
+        String remarks = buildRemarks(
+                data.viewCount(),
+                totalCommentCount,
+                collectedCommentCount,
+                deletedCommentCount,
+                filename
+        );
         String captureImageBase64 = Base64.getEncoder().encodeToString(capture.pngBytes());
 
         return new DcinsidePostData(
@@ -454,6 +467,13 @@ public class DcinsideCrawlService {
         return URLEncoder.encode(value == null ? "" : value, StandardCharsets.UTF_8);
     }
 
+    // 삭제 댓글 수 카운트 (is_delete=1)
+    private int countDeletedComments(List<CommentData> comments) {
+        return (int) comments.stream()
+                .filter(c -> "1".equals(c.isDelete()))
+                .count();
+    }
+
     // 실제 댓글 수 카운트
     private int countRealComments(List<CommentData> comments) {
         return (int) comments.stream()
@@ -509,9 +529,17 @@ public class DcinsideCrawlService {
     }
 
     // 범죄일람표 '비고'란 빌드
-    private String buildRemarks(int viewCount, int commentCount, String captureFilename) {
+    private String buildRemarks(
+            int viewCount,
+            int totalCommentCount,
+            int collectedCommentCount,
+            int deletedCommentCount,
+            String captureFilename
+    ) {
         return "조회수 : " + viewCount + "\n"
-                + "댓글 수 : " + commentCount + "\n"
+                + "댓글 수 : " + totalCommentCount
+                + " (수집 댓글: " + collectedCommentCount
+                + " / 삭제된 댓글 : " + deletedCommentCount + ")\n"
                 + "증거자료(캡처파일) : " + captureFilename + "\n";
     }
 
