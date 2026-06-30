@@ -17,6 +17,7 @@ const COLUMNS = [
 ] as const;
 
 const CAPTURE_COLUMN = 10;
+const URL_COLUMN = 4;
 
 const HEADER_FILL = {
   type: 'pattern' as const,
@@ -145,6 +146,13 @@ export async function exportCrimeListExcel(
         right: { style: 'thin' },
       };
     });
+
+    if (post.url?.trim()) {
+      const url = post.url.trim();
+      const urlCell = row.getCell(URL_COLUMN);
+      urlCell.value = { text: url, hyperlink: url };
+      urlCell.font = { color: { argb: 'FF0563C1' }, underline: true };
+    }
   });
 
   const buffer = await workbook.xlsx.writeBuffer();
