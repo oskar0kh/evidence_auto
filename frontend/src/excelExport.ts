@@ -15,6 +15,7 @@ const COLUMNS = [
   { header: '비고', key: 'remarks', width: 40 },
   { header: '연번표시 캡처파일 (캡처파일 디렉토리)', key: 'captureFile', width: 45 },
   { header: '캡처 썸네일', key: 'captureThumbnail', width: 48 },
+  { header: '죄명', key: 'crimeType', width: 20 },
 ] as const;
 
 const CAPTURE_COLUMN = 9;
@@ -34,12 +35,6 @@ const HEADER_FONT = {
   bold: true,
   color: { argb: 'FFFFFFFF' },
   size: 11,
-};
-
-const CAPTURE_HEADER_FILL = {
-  type: 'pattern' as const,
-  pattern: 'solid' as const,
-  fgColor: { argb: 'FFBDD7EE' },
 };
 
 const MIN_ROW_HEIGHT = 24;
@@ -127,14 +122,10 @@ export async function exportCrimeListExcel(
     headerRow.getCell(i + 1).value = col.header;
   });
   headerRow.height = 28;
-  headerRow.eachCell((cell, colNumber) => {
+  headerRow.eachCell((cell) => {
     cell.font = HEADER_FONT;
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-    if (colNumber === CAPTURE_COLUMN || colNumber === THUMBNAIL_COLUMN) {
-      cell.fill = CAPTURE_HEADER_FILL;
-    } else {
-      cell.fill = HEADER_FILL;
-    }
+    cell.fill = HEADER_FILL;
     cell.border = {
       top: { style: 'thin' },
       left: { style: 'thin' },
@@ -160,6 +151,7 @@ export async function exportCrimeListExcel(
       post.remarks,
       post.captureFilePath,
       '',
+      post.crimeType || '',
     ];
 
     const row = sheet.getRow(index + 3);
