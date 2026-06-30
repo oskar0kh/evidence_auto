@@ -43,6 +43,44 @@ const CAPTURE_HEADER_FILL = {
   fgColor: { argb: 'FFBDD7EE' },
 };
 
+const MIN_ROW_HEIGHT = 24;
+const LINE_HEIGHT_PT = 15;
+const ROW_PADDING_PT = 10;
+const MAX_ROW_HEIGHT = 409;
+
+function stringCellValue(value: unknown): string {
+  if (value == null) {
+    return '';
+  }
+  return String(value);
+}
+
+function estimateWrappedLines(text: string, columnWidth: number): number {
+  if (!text) {
+    return 1;
+  }
+
+  const charsPerLine = Math.max(1, Math.floor(columnWidth * 0.85));
+  return text.split('\n').reduce((lineCount, line) => {
+    return lineCount + Math.max(1, Math.ceil(line.length / charsPerLine));
+  }, 0);
+}
+
+function calculateRowHeight(values: unknown[]): number {
+  let maxLines = 1;
+
+  values.forEach((value, index) => {
+    const columnWidth = COLUMNS[index]?.width ?? 10;
+    const lines = estimateWrappedLines(stringCellValue(value), columnWidth);
+    maxLines = Math.max(maxLines, lines);
+  });
+
+  return Math.min(
+    MAX_ROW_HEIGHT,
+    Math.max(MIN_ROW_HEIGHT, maxLines * LINE_HEIGHT_PT + ROW_PADDING_PT)
+  );
+}
+
 export async function exportCrimeListExcel(
   posts: DcinsidePostData[],
   directory: FileSystemDirectoryHandle
@@ -88,8 +126,7 @@ export async function exportCrimeListExcel(
     const serial = index + 1;
     const commentSection = extractCommentsSection(post.content);
 
-    const row = sheet.getRow(index + 3);
-    row.values = [
+    const rowValues = [
       serial,
       post.postDate,
       post.nickname,
@@ -102,7 +139,9 @@ export async function exportCrimeListExcel(
       post.captureFilePath,
     ];
 
-    row.height = 80;
+    const row = sheet.getRow(index + 3);
+    row.values = rowValues;
+    row.height = calculateRowHeight(rowValues);
     row.eachCell((cell, colNumber) => {
       cell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true };
       cell.border = {
