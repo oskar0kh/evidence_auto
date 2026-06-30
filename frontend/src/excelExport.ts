@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { extractCommentsSection } from './commentSection';
+import { addSpacingBetweenLines, extractBodySection, extractCommentsSection } from './commentSection';
 import { writeArrayBufferToDirectory } from './localFileStorage';
 import type { DcinsidePostData } from './types';
 
@@ -16,7 +16,6 @@ const COLUMNS = [
   { header: '연번표시 캡처파일 (캡처파일 디렉토리)', key: 'captureFile', width: 45 },
 ] as const;
 
-const CONTENT_COLUMN = 6;
 const CAPTURE_COLUMN = 10;
 
 const HEADER_FILL = {
@@ -29,12 +28,6 @@ const HEADER_FONT = {
   bold: true,
   color: { argb: 'FFFFFFFF' },
   size: 11,
-};
-
-const CONTENT_HIGHLIGHT = {
-  type: 'pattern' as const,
-  pattern: 'solid' as const,
-  fgColor: { argb: 'FFFFFF00' },
 };
 
 const CAPTURE_HEADER_FILL = {
@@ -124,7 +117,8 @@ export async function exportCrimeListExcel(
 
   posts.forEach((post, index) => {
     const serial = index + 1;
-    const commentSection = extractCommentsSection(post.content);
+    const commentSection = addSpacingBetweenLines(extractCommentsSection(post.content));
+    const bodySection = addSpacingBetweenLines(extractBodySection(post.content));
 
     const rowValues = [
       serial,
@@ -132,7 +126,7 @@ export async function exportCrimeListExcel(
       post.nickname,
       post.url,
       post.title,
-      post.content,
+      bodySection,
       commentSection,
       post.crimeType || '',
       post.remarks,
@@ -150,9 +144,6 @@ export async function exportCrimeListExcel(
         bottom: { style: 'thin' },
         right: { style: 'thin' },
       };
-      if (colNumber === CONTENT_COLUMN) {
-        cell.fill = CONTENT_HIGHLIGHT;
-      }
     });
   });
 

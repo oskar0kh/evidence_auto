@@ -8,6 +8,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
+import org.jsoup.nodes.Node;
+import org.jsoup.nodes.TextNode;
 import org.jsoup.select.Elements;
 import org.springframework.stereotype.Service;
 
@@ -85,7 +87,7 @@ public class DcinsideCrawlService {
         // 게시글 제목, 본문, 게시글 URL 추출
         String headline = textOrEmpty(jsonLd, "headline");
         String title = extractTitle(headline, doc);
-        String body = textOrEmpty(jsonLd, "articleBody");
+        String body = extractBody(doc, textOrEmpty(jsonLd, "articleBody"));
         String postUrl = textOrEmpty(jsonLd, "URL");
 
         if (postUrl.isEmpty()) {
@@ -241,6 +243,70 @@ public class DcinsideCrawlService {
             return "MI";
         }
         return "G";
+    }
+
+    // 게시글 본문 추출 (HTML 줄바꿈 보존, 없으면 JSON-LD articleBody 사용)
+    private String extractBody(Document doc, String jsonLdBody) {
+        Element content = doc.selectFirst("div.write_div");
+        if (content == null) {
+            content = doc.selectFirst(".gallview_contents .writing_view");
+        }
+        if (content != null) {
+            String htmlBody = htmlToPlainTextWithLineBreaks(content);
+            if (!htmlBody.isBlank()) {
+                return htmlBody;
+            }
+        }
+        return jsonLdBody == null ? "" : jsonLdBody;
+    }
+
+    private String htmlToPlainTextWithLineBreaks(Element root) {
+        Element clone = root.clone();
+        clone.select("script, style").remove();
+
+        StringBuilder sb = new StringBuilder();
+        appendPlainText(clone, sb);
+        return normalizeBodyLines(sb.toString());
+    }
+
+    private void appendPlainText(Node node, StringBuilder sb) {
+        if (node instanceof TextNode textNode) {
+            sb.append(textNode.text());
+            return;
+        }
+        if (!(node instanceof Element element)) {
+            return;
+        }
+
+        String tag = element.tagName().toLowerCase();
+        if ("br".equals(tag)) {
+            sb.append('\n');
+            return;
+        }
+
+        for (Node child : element.childNodes()) {
+            appendPlainText(child, sb);
+        }
+
+        if ("p".equals(tag) || "div".equals(tag) || "li".equals(tag) || "blockquote".equals(tag)) {
+            sb.append('\n');
+        }
+    }
+
+    private String normalizeBodyLines(String text) {
+        String[] lines = text.replace('\r', '\n').split("\n");
+        StringBuilder normalized = new StringBuilder();
+        for (String line : lines) {
+            String trimmed = line.strip();
+            if (trimmed.isEmpty()) {
+                continue;
+            }
+            if (normalized.length() > 0) {
+                normalized.append('\n');
+            }
+            normalized.append(trimmed);
+        }
+        return normalized.toString();
     }
 
     // 텍스트 또는 빈 문자열 반환
