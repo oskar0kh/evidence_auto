@@ -4,7 +4,7 @@ import { crawlDcinside } from './api';
 import { saveCapturesToDirectory } from './captureFiles';
 import { exportCrimeListExcel } from './excelExport';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './nativeFolderPicker';
-import { getCaptureFilename, joinDirectoryPath } from './pathUtils';
+import { getCaptureFilename } from './pathUtils';
 import type { DcinsidePostData } from './types';
 import './App.css';
 
@@ -62,7 +62,7 @@ export default function App() {
     try {
       const handle = await pickNativeDirectory();
       saveDirectoryRef.current = handle;
-      setSaveDirectoryPath((prev) => (prev.trim() ? prev : handle.name));
+      setSaveDirectoryPath(handle.name);
       setError(null);
     } catch (e) {
       if (e instanceof DOMException && e.name === 'AbortError') {
@@ -169,10 +169,9 @@ export default function App() {
       return;
     }
     try {
-      const directoryPath = saveDirectoryPath.trim() || saveDirectoryRef.current.name;
       const postsForExcel = savedResults.map((post) => ({
         ...post,
-        captureFilePath: joinDirectoryPath(directoryPath, getCaptureFilename(post.captureFilePath)),
+        captureFilePath: getCaptureFilename(post.captureFilePath),
       }));
       await saveCapturesToDirectory(saveDirectoryRef.current, savedResults);
       await exportCrimeListExcel(postsForExcel, saveDirectoryRef.current);
@@ -210,9 +209,9 @@ export default function App() {
               id="save-directory"
               className="save-directory-input"
               type="text"
-              placeholder="C:\Users\HP\Desktop\증거자료"
+              readOnly
+              placeholder="폴더 선택 버튼으로 지정"
               value={saveDirectoryPath}
-              onChange={(e) => setSaveDirectoryPath(e.target.value)}
             />
             <button
               type="button"
@@ -224,7 +223,8 @@ export default function App() {
             </button>
           </div>
           <p className="field-hint">
-            폴더 선택으로 파일을 저장합니다. 엑셀에 전체 경로(예: C:\Users\HP\Desktop\증거자료)를 기록하려면 입력란에 직접 입력하세요.
+            폴더 선택으로 캡처·엑셀을 같은 위치에 저장합니다. 브라우저 보안상 Windows/Mac 전체 경로는
+            가져올 수 없으며, 엑셀의 캡처파일 링크는 같은 폴더의 이미지를 엽니다.
           </p>
 
           <div className="button-row">

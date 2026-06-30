@@ -1,6 +1,7 @@
 import ExcelJS from 'exceljs';
 import { addSpacingBetweenLines, extractBodySection, extractCommentsSection } from './commentSection';
 import { writeArrayBufferToDirectory } from './localFileStorage';
+import { getCaptureFilename, toSameFolderCaptureHyperlink } from './pathUtils';
 import type { DcinsidePostData } from './types';
 
 const COLUMNS = [
@@ -152,6 +153,16 @@ export async function exportCrimeListExcel(
       const urlCell = row.getCell(URL_COLUMN);
       urlCell.value = { text: url, hyperlink: url };
       urlCell.font = { color: { argb: 'FF0563C1' }, underline: true };
+    }
+
+    const captureFilename = getCaptureFilename(post.captureFilePath);
+    if (captureFilename) {
+      const captureCell = row.getCell(CAPTURE_COLUMN);
+      captureCell.value = {
+        text: captureFilename,
+        hyperlink: toSameFolderCaptureHyperlink(captureFilename),
+      };
+      captureCell.font = { color: { argb: 'FF0563C1' }, underline: true };
     }
   });
 

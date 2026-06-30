@@ -11,3 +11,9 @@ export function joinDirectoryPath(directoryPath: string, filename: string): stri
   const separator = base.includes('\\') || /^[A-Za-z]:/.test(base) ? '\\' : '/';
   return `${base}${separator}${filename}`;
 }
+
+/** 엑셀(.xlsx)과 같은 폴더에 있는 캡처 PNG를 여는 상대 하이퍼링크 */
+export function toSameFolderCaptureHyperlink(filename: string): string {
+  const normalized = filename.replace(/\\/g, '/').replace(/^\.\//, '');
+  return `./${normalized}`;
+}
