@@ -12,12 +12,11 @@ const COLUMNS = [
   { header: '게시글 제목', key: 'title', width: 40 },
   { header: '내용', key: 'content', width: 80 },
   { header: '댓글 작성자·내용·일시', key: 'commentSection', width: 60 },
-  { header: '죄명', key: 'crimeType', width: 20 },
   { header: '비고', key: 'remarks', width: 40 },
   { header: '연번표시 캡처파일 (캡처파일 디렉토리)', key: 'captureFile', width: 45 },
 ] as const;
 
-const CAPTURE_COLUMN = 10;
+const CAPTURE_COLUMN = 9;
 const URL_COLUMN = 4;
 
 const HEADER_FILL = {
@@ -130,7 +129,6 @@ export async function exportCrimeListExcel(
       post.title,
       bodySection,
       commentSection,
-      post.crimeType || '',
       post.remarks,
       post.captureFilePath,
     ];
