@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { crawlDcinside } from './api';
 import { saveCapturesToDirectory } from './captureFiles';
 import { exportCrimeListExcel } from './excelExport';
@@ -35,6 +35,19 @@ function shortenUrl(url: string, max = 56): string {
   return url.length <= max ? url : `${url.slice(0, max)}…`;
 }
 
+function formatDuration(ms: number): string {
+  if (ms < 1000) {
+    return `${ms}ms`;
+  }
+  const totalSeconds = ms / 1000;
+  if (totalSeconds < 60) {
+    return `${totalSeconds.toFixed(1)}초`;
+  }
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = (totalSeconds % 60).toFixed(1);
+  return `${minutes}분 ${seconds}초`;
+}
+
 interface CrawlProgress {
   completed: number;
   total: number;
@@ -52,6 +65,21 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [savedResults, setSavedResults] = useState<DcinsidePostData[]>([]);
   const [errors, setErrors] = useState<{ url: string; error: string }[]>([]);
+  const [elapsedMs, setElapsedMs] = useState(0);
+  const [lastCrawlDurationMs, setLastCrawlDurationMs] = useState<number | null>(null);
+  const crawlStartAtRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!loading) {
+      return;
+    }
+    const timerId = window.setInterval(() => {
+      if (crawlStartAtRef.current !== null) {
+        setElapsedMs(Date.now() - crawlStartAtRef.current);
+      }
+    }, 100);
+    return () => window.clearInterval(timerId);
+  }, [loading]);
 
   const handlePickDirectory = async () => {
     if (!isNativeFolderPickerSupported()) {
@@ -80,6 +108,8 @@ export default function App() {
       return;
     }
 
+    crawlStartAtRef.current = Date.now();
+    setElapsedMs(0);
     setLoading(true);
     setError(null);
     setErrors([]);
@@ -133,6 +163,9 @@ export default function App() {
         setError('이번 요청의 모든 URL 처리에 실패했습니다.');
       }
     } finally {
+      if (crawlStartAtRef.current !== null) {
+        setLastCrawlDurationMs(Date.now() - crawlStartAtRef.current);
+      }
       setLoading(false);
       setProgress(null);
       setUrlInput('');
@@ -240,6 +273,11 @@ export default function App() {
               범죄일람표, 캡처화면 저장
             </button>
             <span className="saved-count">현재까지 저장된 링크 개수: {savedResults.length}</span>
+            {lastCrawlDurationMs !== null && !loading && (
+              <span className="crawl-timer-summary">
+                마지막 수집 시간: {formatDuration(lastCrawlDurationMs)}
+              </span>
+            )}
           </div>
 
           {loading && progress && (
@@ -250,7 +288,7 @@ export default function App() {
                   <span className="progress-percent"> ({progressPercent}%)</span>
                 </span>
                 <span className="progress-stats">
-                  성공 {progress.successCount} · 실패 {progress.failCount}
+                  성공 {progress.successCount} · 실패 {progress.failCount} · 수집 {formatDuration(elapsedMs)}
                 </span>
               </div>
               <div className="progress-track">
