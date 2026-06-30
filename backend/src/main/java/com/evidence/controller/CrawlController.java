@@ -1,6 +1,7 @@
 package com.evidence.controller;
 
 import com.evidence.dto.CrawlRequest;
+import com.evidence.dto.CaptureImage;
 import com.evidence.dto.DcinsidePostData;
 import com.evidence.service.DcinsideCrawlService;
 import com.evidence.service.ScreenshotService;
@@ -13,7 +14,6 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
-import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
@@ -54,8 +54,8 @@ public class CrawlController {
                         ? request.startSerial() + results.size()
                         : results.size() + 1;
                 String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
-                Path captureFile = screenshotService.captureFullPage(trimmed, excelRowNumber, postNo);
-                results.add(crawlService.attachCapture(crawled, captureFile));
+                CaptureImage capture = screenshotService.captureFullPage(trimmed, excelRowNumber, postNo);
+                results.add(crawlService.attachCapture(crawled, capture));
             } catch (Exception e) {
                 log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
                 errors.add(errorEntry(trimmed, e));

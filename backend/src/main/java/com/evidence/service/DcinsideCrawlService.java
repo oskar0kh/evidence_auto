@@ -1,5 +1,6 @@
 package com.evidence.service;
 
+import com.evidence.dto.CaptureImage;
 import com.evidence.dto.CommentData;
 import com.evidence.dto.DcinsidePostData;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -18,10 +19,10 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Path;
 import java.time.OffsetDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
+import java.util.Base64;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -121,6 +122,7 @@ public class DcinsideCrawlService {
                 "",
                 "",
                 "",
+                "",
                 viewCount,
                 commentCount,
                 postNo,
@@ -128,9 +130,10 @@ public class DcinsideCrawlService {
         );
     }
 
-    public DcinsidePostData attachCapture(DcinsidePostData data, Path captureFile) {
-        String filename = captureFile.getFileName().toString();
+    public DcinsidePostData attachCapture(DcinsidePostData data, CaptureImage capture) {
+        String filename = capture.filename();
         String remarks = buildRemarks(data.viewCount(), data.commentCount(), filename);
+        String captureImageBase64 = Base64.getEncoder().encodeToString(capture.pngBytes());
 
         return new DcinsidePostData(
                 data.url(),
@@ -143,6 +146,7 @@ public class DcinsideCrawlService {
                 data.crimeType(),
                 remarks,
                 filename,
+                captureImageBase64,
                 data.viewCount(),
                 data.commentCount(),
                 data.postNo(),

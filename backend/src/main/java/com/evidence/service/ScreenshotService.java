@@ -1,5 +1,6 @@
 package com.evidence.service;
 
+import com.evidence.dto.CaptureImage;
 import io.github.bonigarcia.wdm.WebDriverManager;
 import jakarta.annotation.PostConstruct;
 import org.openqa.selenium.By;
@@ -38,15 +39,12 @@ public class ScreenshotService {
 
     private static final Logger log = LoggerFactory.getLogger(ScreenshotService.class);
 
-    public static final String CAPTURE_DIR_NAME = "captured_page";
-
     private static final Pattern POST_NO_PATTERN = Pattern.compile("[?&]no=(\\d+)");
     private static final Pattern CHROME_VERSION_PATTERN = Pattern.compile("(\\d+)\\.");
     private static final int MAX_CAPTURE_WIDTH = 1920;
     private static final int MAX_CAPTURE_HEIGHT = 12000;
     private static final int MAX_CAPTURE_ATTEMPTS = 2;
 
-    private final Path outputDir;
     private final String configuredChromeBinary;
     private final long commentWaitMs;
     private final int pageLoadTimeoutSeconds;
@@ -58,14 +56,12 @@ public class ScreenshotService {
 
     // 스크린샷 서비스 생성자
     public ScreenshotService(
-            @Value("${evidence.screenshot-dir:" + CAPTURE_DIR_NAME + "}") String screenshotDir,
             @Value("${evidence.chrome.binary:}") String configuredChromeBinary,
             @Value("${evidence.screenshot.comment-wait-ms:1500}") long commentWaitMs,
             @Value("${evidence.screenshot.page-load-timeout-seconds:15}") int pageLoadTimeoutSeconds,
             @Value("${evidence.screenshot.content-wait-seconds:45}") int contentWaitSeconds,
             @Value("${evidence.screenshot.block-tracking:true}") boolean blockTracking
     ) {
-        this.outputDir = Paths.get(screenshotDir).toAbsolutePath().normalize();
         this.configuredChromeBinary = configuredChromeBinary == null ? "" : configuredChromeBinary.trim();
         this.commentWaitMs = commentWaitMs;
         this.pageLoadTimeoutSeconds = pageLoadTimeoutSeconds;
@@ -76,7 +72,6 @@ public class ScreenshotService {
     // 스크린샷 서비스 초기화
     @PostConstruct
     void init() throws Exception {
-        Files.createDirectories(outputDir);
         chromeBinary = resolveChromeBinary();
         setupChromeDriver(chromeBinary);
         warnIfKoreanFontsMissing();
@@ -84,36 +79,37 @@ public class ScreenshotService {
     }
 
     // 스크린샷 전체 페이지 캡처
-    public Path captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
-        Files.createDirectories(outputDir);
-
+    public CaptureImage captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
         String filename = formatFilename(excelRowNumber, postNo);
-        Path filePath = outputDir.resolve(filename);
-        
-        // 캡처 락 획득
+        Path tempFile = Files.createTempFile("evidence-capture-", ".png");
+
         synchronized (captureLock) {
             Exception lastError = null;
-            for (int attempt = 1; attempt <= MAX_CAPTURE_ATTEMPTS; attempt++) { // 캡처 시도 최대 2번
-                try {
-                    captureOnce(url, postNo, filePath); // 캡처 한 번 시도
-                    return filePath;
-                } catch (Exception e) {
-                    lastError = e;
-                    log.warn("Screenshot attempt {}/{} failed for {}: {}", attempt, MAX_CAPTURE_ATTEMPTS, url, e.getMessage());
-                    if (attempt < MAX_CAPTURE_ATTEMPTS) {
-                        TimeUnit.SECONDS.sleep(1); // 1초 대기
+            try {
+                for (int attempt = 1; attempt <= MAX_CAPTURE_ATTEMPTS; attempt++) {
+                    try {
+                        captureOnce(url, postNo, tempFile);
+                        byte[] pngBytes = Files.readAllBytes(tempFile);
+                        return new CaptureImage(filename, pngBytes);
+                    } catch (Exception e) {
+                        lastError = e;
+                        log.warn("Screenshot attempt {}/{} failed for {}: {}", attempt, MAX_CAPTURE_ATTEMPTS, url, e.getMessage());
+                        if (attempt < MAX_CAPTURE_ATTEMPTS) {
+                            TimeUnit.SECONDS.sleep(1);
+                        }
                     }
                 }
-            }
 
-            // 캡처 실패 시 예외 발생
-            throw new IllegalStateException(
-                    "스크린샷 캡처 실패: " + (lastError != null && lastError.getMessage() != null
-                            ? lastError.getMessage()
-                            : "알 수 없는 오류")
-                            + " (Chrome: " + chromeBinary + ")",
-                    lastError
-            );
+                throw new IllegalStateException(
+                        "스크린샷 캡처 실패: " + (lastError != null && lastError.getMessage() != null
+                                ? lastError.getMessage()
+                                : "알 수 없는 오류")
+                                + " (Chrome: " + chromeBinary + ")",
+                        lastError
+                );
+            } finally {
+                Files.deleteIfExists(tempFile);
+            }
         }
     }
 
@@ -158,10 +154,6 @@ public class ScreenshotService {
             return matcher.group(1);
         }
         throw new IllegalArgumentException("URL에서 게시글 번호(no)를 찾을 수 없습니다: " + url);
-    }
-
-    public Path getOutputDir() {
-        return outputDir;
     }
 
     private void setupChromeDriver(String binary) {

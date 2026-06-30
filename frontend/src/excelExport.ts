@@ -43,7 +43,7 @@ const CAPTURE_HEADER_FILL = {
 export async function exportCrimeListExcel(
   posts: DcinsidePostData[],
   directory: FileSystemDirectoryHandle
-): Promise<string> {
+): Promise<void> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = '범죄일람표 크롤러';
   const sheet = workbook.addWorksheet('범죄일람표', {
@@ -119,6 +119,4 @@ export async function exportCrimeListExcel(
   const filename = `범죄일람표_${stamp}.xlsx`;
 
   await writeArrayBufferToDirectory(directory, filename, buffer as ArrayBuffer);
-
-  return `${directory.name}/${filename}`;
 }

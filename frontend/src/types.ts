@@ -8,6 +8,7 @@ export interface DcinsidePostData {
   crimeType: string;
   remarks: string;
   captureFilePath: string;
+  captureImageBase64: string;
   viewCount: number;
   commentCount: number;
 }

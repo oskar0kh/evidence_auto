@@ -21,10 +21,6 @@ backend/.gradle/
 .DS_Store
 Thumbs.db
 
-# Generated screenshots
-backend/captured_page/
-captured_page/
-
 # Env
 .env
 .env.local

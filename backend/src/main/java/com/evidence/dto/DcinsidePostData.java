@@ -15,6 +15,7 @@ public record DcinsidePostData(
         String crimeType,
         String remarks,
         String captureFilePath,
+        String captureImageBase64,
         int viewCount,
         int commentCount,
         @JsonIgnore String postNo,
