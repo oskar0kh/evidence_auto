@@ -25,6 +25,7 @@ Thumbs.db
 .env
 .env.local
 backend/google-chrome-stable_current_amd64.deb
+backend/.chrome/
 
 # TypeScript
 *.tsbuildinfo
