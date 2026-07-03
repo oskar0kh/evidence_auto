@@ -10,6 +10,7 @@ frontend/node_modules/
 # Build
 frontend/dist/
 backend/build/
+backend/bin/
 backend/.gradle/
 
 # IDE
