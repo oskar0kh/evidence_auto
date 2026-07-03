@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
-import { crawlDcinside } from './api';
+import { crawlDcinside, searchDcinside } from './api';
 import { saveCapturesToDirectory } from './captureFiles';
 import { exportCrimeListExcel } from './excelExport';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './nativeFolderPicker';
@@ -58,6 +58,7 @@ interface CrawlProgress {
 
 export default function App() {
   const [urlInput, setUrlInput] = useState('');
+  const [searchInput, setSearchInput] = useState('');
   const saveDirectoryRef = useRef<FileSystemDirectoryHandle | null>(null);
   const [saveDirectoryPath, setSaveDirectoryPath] = useState('');
   const [loading, setLoading] = useState(false);
@@ -102,10 +103,34 @@ export default function App() {
     }
   };
 
+  const ensureSaveDirectorySelected = (): boolean => {
+    if (!saveDirectoryRef.current) {
+      setError('저장 폴더를 선택해 주세요.');
+      return false;
+    }
+    return true;
+  };
+
   const handleCrawl = async () => {
     const urls = parseUrls(urlInput);
     if (urls.length === 0) {
       setError('디시인사이드 게시글 URL을 입력해 주세요.');
+      return;
+    }
+    if (!ensureSaveDirectorySelected()) {
+      return;
+    }
+
+    await runCrawlForUrls(urls, { clearUrlInput: true });
+  };
+
+  const handleSearchCrawl = async () => {
+    const query = searchInput.trim();
+    if (!query) {
+      setError('검색어를 입력해 주세요.');
+      return;
+    }
+    if (!ensureSaveDirectorySelected()) {
       return;
     }
 
@@ -114,6 +139,45 @@ export default function App() {
     setLoading(true);
     setError(null);
     setErrors([]);
+    setProgress({
+      completed: 0,
+      total: 1,
+      currentUrl: '디시 통합검색 중…',
+      successCount: 0,
+      failCount: 0,
+    });
+
+    try {
+      const searchResult = await searchDcinside(query, 100);
+      if (searchResult.urls.length === 0) {
+        setError('검색 결과가 없습니다.');
+        setLoading(false);
+        setProgress(null);
+        return;
+      }
+
+      await runCrawlForUrls(searchResult.urls, { clearSearchInput: true, skipInit: true });
+    } catch (e) {
+      setError(resolveCrawlError(e));
+      if (crawlStartAtRef.current !== null) {
+        setLastCrawlDurationMs(Date.now() - crawlStartAtRef.current);
+      }
+      setLoading(false);
+      setProgress(null);
+    }
+  };
+
+  const runCrawlForUrls = async (
+    urls: string[],
+    options?: { clearUrlInput?: boolean; clearSearchInput?: boolean; skipInit?: boolean }
+  ) => {
+    if (!options?.skipInit) {
+      crawlStartAtRef.current = Date.now();
+      setElapsedMs(0);
+      setLoading(true);
+      setError(null);
+      setErrors([]);
+    }
 
     const batchErrors: { url: string; error: string }[] = [];
     let successCount = 0;
@@ -169,7 +233,12 @@ export default function App() {
       }
       setLoading(false);
       setProgress(null);
-      setUrlInput('');
+      if (options?.clearUrlInput) {
+        setUrlInput('');
+      }
+      if (options?.clearSearchInput) {
+        setSearchInput('');
+      }
     }
   };
 
@@ -238,7 +307,22 @@ export default function App() {
             value={urlInput}
             onChange={(e) => setUrlInput(e.target.value)}
             rows={4}
+            disabled={loading}
           />
+
+          <label htmlFor="search-input">통합검색어 (최대 100건)</label>
+          <input
+            id="search-input"
+            className="search-input"
+            type="text"
+            placeholder="검색어를 입력하면 디시 통합검색 결과를 크롤링합니다"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            disabled={loading}
+          />
+          <p className="field-hint search-hint">
+            URL 입력과 검색어 입력은 별도입니다. 검색은 디시 통합검색(최신순) 기준이며 최대 100건까지 수집합니다.
+          </p>
 
           <label htmlFor="save-directory">저장 폴더 (캡처·엑셀)</label>
           <div className="save-directory-row">
@@ -265,8 +349,21 @@ export default function App() {
           </p>
 
           <div className="button-row">
-            <button type="button" className="btn primary" onClick={handleCrawl} disabled={loading}>
-              {loading ? '크롤링·캡처 중…' : '크롤링 시작'}
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => void handleCrawl()}
+              disabled={loading || !saveDirectoryPath}
+            >
+              {loading ? '크롤링·캡처 중…' : 'URL 크롤링'}
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => void handleSearchCrawl()}
+              disabled={loading || !saveDirectoryPath}
+            >
+              {loading ? '검색·크롤링 중…' : '입력한 검색어로 크롤링'}
             </button>
             <button
               type="button"

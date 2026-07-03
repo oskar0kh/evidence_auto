@@ -7,6 +7,7 @@ import java.util.List;
 public record DcinsidePostData(
         String url,
         String postDate,
+        String galleryName,
         String nickname,
         String title,
         @JsonIgnore String body,

@@ -7,6 +7,7 @@ import type { DcinsidePostData } from './types';
 const COLUMNS = [
   { header: '연번', key: 'serial', width: 8 },
   { header: '게시일자', key: 'postDate', width: 22 },
+  { header: '갤러리명', key: 'galleryName', width: 18 },
   { header: '닉네임', key: 'nickname', width: 18 },
   { header: 'URL', key: 'url', width: 50 },
   { header: '게시글 제목', key: 'title', width: 40 },
@@ -18,9 +19,9 @@ const COLUMNS = [
   { header: '죄명', key: 'crimeType', width: 20 },
 ] as const;
 
-const CAPTURE_COLUMN = 9;
-const THUMBNAIL_COLUMN = 10;
-const URL_COLUMN = 4;
+const CAPTURE_COLUMN = 10;
+const THUMBNAIL_COLUMN = 11;
+const URL_COLUMN = 5;
 
 const HEADER_FILL = {
   type: 'pattern' as const,
@@ -172,6 +173,7 @@ export async function exportCrimeListExcel(
     const rowValues = [
       serial,
       sanitizeExcelText(post.postDate),
+      sanitizeExcelText(post.galleryName ?? ''),
       sanitizeExcelText(post.nickname),
       sanitizeExcelText(post.url),
       sanitizeExcelText(post.title),

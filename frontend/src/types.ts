@@ -11,6 +11,7 @@ export interface CommentData {
 export interface DcinsidePostData {
   url: string;
   postDate: string;
+  galleryName: string;
   nickname: string;
   title: string;
   content: string;
@@ -26,4 +27,9 @@ export interface DcinsidePostData {
 export interface CrawlResponse {
   data: DcinsidePostData[];
   errors: { url: string; error: string }[];
+}
+
+export interface SearchResponse {
+  urls: string[];
+  count: number;
 }

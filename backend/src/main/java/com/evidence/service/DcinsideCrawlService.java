@@ -109,12 +109,14 @@ public class DcinsideCrawlService {
 
         // 작성자 정보, 내용 추출
         String nickname = formatDisplayNickname(writer.nick(), writer.ip(), writer.uid());
+        String galleryName = extractGalleryName(doc);
         String content = buildContent(title, body, comments);
 
         // 게시글 데이터 반환
         return new DcinsidePostData(
                 postUrl,
                 postDate,
+                galleryName,
                 nickname,
                 title,
                 body,
@@ -151,6 +153,7 @@ public class DcinsideCrawlService {
         return new DcinsidePostData(
                 data.url(),
                 data.postDate(),
+                data.galleryName(),
                 data.nickname(),
                 data.title(),
                 data.body(),
@@ -234,6 +237,23 @@ public class DcinsideCrawlService {
             if (el != null && !el.val().isBlank()) {
                 return el.val().trim();
             }
+        }
+        return "";
+    }
+
+    // 갤러리명 추출
+    private String extractGalleryName(Document doc) {
+        String fromHidden = extractHiddenValue(doc, "gallery_name");
+        if (!fromHidden.isEmpty()) {
+            return fromHidden;
+        }
+        Element headLink = doc.selectFirst("div.page_head h2 a");
+        if (headLink != null) {
+            String text = headLink.text().trim();
+            if (text.endsWith(" 갤러리")) {
+                return text.substring(0, text.length() - " 갤러리".length()).trim();
+            }
+            return text;
         }
         return "";
     }
