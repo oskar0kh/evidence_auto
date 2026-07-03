@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { addSpacingBetweenLines, extractBodySection, extractCommentsSection } from './commentSection';
+import { extractBodySection, extractCommentsSection } from './commentSection';
 import { writeArrayBufferToDirectory } from './localFileStorage';
 import { getCaptureFilename, toSameFolderCaptureHyperlink } from './pathUtils';
 import type { DcinsidePostData } from './types';
@@ -22,9 +22,6 @@ const CAPTURE_COLUMN = 9;
 const THUMBNAIL_COLUMN = 10;
 const URL_COLUMN = 4;
 
-const THUMBNAIL_MAX_WIDTH_PX = 320;
-const PIXELS_TO_POINTS = 0.75;
-
 const HEADER_FILL = {
   type: 'pattern' as const,
   pattern: 'solid' as const,
@@ -40,12 +37,24 @@ const HEADER_FONT = {
 const MIN_ROW_HEIGHT = 24;
 const LINE_HEIGHT_PT = 15;
 const ROW_PADDING_PT = 10;
+const EXCEL_MAX_CELL_CHARS = 32767;
+const EXCEL_TRUNCATION_SUFFIX = '\n…(이하 생략)';
 
-function stringCellValue(value: unknown): string {
+function sanitizeExcelText(value: unknown): string {
   if (value == null) {
     return '';
   }
-  return String(value);
+  // XML 1.0에서 허용되지 않는 제어 문자 제거 (탭·LF·CR은 유지)
+  const sanitized = String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '');
+  if (sanitized.length <= EXCEL_MAX_CELL_CHARS) {
+    return sanitized;
+  }
+  const maxContentLength = EXCEL_MAX_CELL_CHARS - EXCEL_TRUNCATION_SUFFIX.length;
+  return sanitized.slice(0, maxContentLength) + EXCEL_TRUNCATION_SUFFIX;
+}
+
+function stringCellValue(value: unknown): string {
+  return sanitizeExcelText(value);
 }
 
 function estimateWrappedLines(text: string, columnWidth: number): number {
@@ -71,30 +80,63 @@ function calculateRowHeight(values: unknown[]): number {
   return Math.max(MIN_ROW_HEIGHT, maxLines * LINE_HEIGHT_PT + ROW_PADDING_PT);
 }
 
-function getImageDimensions(base64: string): Promise<{ width: number; height: number }> {
+/** Excel 열 너비(문자 단위) → 화면 픽셀 (Calibri 11pt 기준) */
+function columnWidthToPixels(columnWidth: number): number {
+  return Math.max(1, Math.floor(((256 * columnWidth + Math.floor(128 / 7)) / 256) * 7));
+}
+
+/** Excel 행 높이(pt) → 화면 픽셀 */
+function rowHeightToPixels(rowHeightPt: number): number {
+  return Math.max(1, Math.floor((rowHeightPt * 96) / 72));
+}
+
+function cropThumbnailToPngBase64(
+  base64: string,
+  maxWidthPx: number,
+  maxHeightPx: number
+): Promise<{ base64: string; width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onload = () => {
+      const naturalWidth = image.naturalWidth;
+      const naturalHeight = image.naturalHeight;
+      const scale = Math.max(maxWidthPx / naturalWidth, maxHeightPx / naturalHeight);
+      const sourceWidth = maxWidthPx / scale;
+      const sourceHeight = maxHeightPx / scale;
+
+      const canvas = document.createElement('canvas');
+      canvas.width = maxWidthPx;
+      canvas.height = maxHeightPx;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('캔버스를 사용할 수 없습니다.'));
+        return;
+      }
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillRect(0, 0, maxWidthPx, maxHeightPx);
+      ctx.drawImage(
+        image,
+        0,
+        0,
+        sourceWidth,
+        sourceHeight,
+        0,
+        0,
+        maxWidthPx,
+        maxHeightPx
+      );
+
+      const dataUrl = canvas.toDataURL('image/png');
+      const commaIndex = dataUrl.indexOf(',');
+      resolve({
+        base64: commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl,
+        width: maxWidthPx,
+        height: maxHeightPx,
+      });
+    };
     image.onerror = () => reject(new Error('캡처 이미지를 읽을 수 없습니다.'));
     image.src = `data:image/png;base64,${base64}`;
   });
-}
-
-function fitThumbnailSize(
-  width: number,
-  height: number,
-  maxWidth: number,
-  maxHeight: number
-): { width: number; height: number } {
-  const scale = Math.min(maxWidth / width, maxHeight / height, 1);
-  return {
-    width: Math.max(1, Math.round(width * scale)),
-    height: Math.max(1, Math.round(height * scale)),
-  };
-}
-
-function rowHeightToThumbnailMaxPx(rowHeightPt: number): number {
-  return Math.max(1, Math.round((rowHeightPt - ROW_PADDING_PT) / PIXELS_TO_POINTS));
 }
 
 export async function exportCrimeListExcel(
@@ -137,21 +179,21 @@ export async function exportCrimeListExcel(
   for (let index = 0; index < posts.length; index++) {
     const post = posts[index];
     const serial = index + 1;
-    const commentSection = addSpacingBetweenLines(extractCommentsSection(post.content));
-    const bodySection = addSpacingBetweenLines(extractBodySection(post.content));
+    const commentSection = extractCommentsSection(post.content);
+    const bodySection = extractBodySection(post.content);
 
     const rowValues = [
       serial,
-      post.postDate,
-      post.nickname,
-      post.url,
-      post.title,
-      bodySection,
-      commentSection,
-      post.remarks,
-      post.captureFilePath,
+      sanitizeExcelText(post.postDate),
+      sanitizeExcelText(post.nickname),
+      sanitizeExcelText(post.url),
+      sanitizeExcelText(post.title),
+      sanitizeExcelText(bodySection),
+      sanitizeExcelText(commentSection),
+      sanitizeExcelText(post.remarks),
+      sanitizeExcelText(post.captureFilePath),
       '',
-      post.crimeType || '',
+      sanitizeExcelText(post.crimeType || ''),
     ];
 
     const row = sheet.getRow(index + 3);
@@ -172,7 +214,7 @@ export async function exportCrimeListExcel(
     thumbnailCell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false };
 
     if (post.url?.trim()) {
-      const url = post.url.trim();
+      const url = sanitizeExcelText(post.url.trim());
       const urlCell = row.getCell(URL_COLUMN);
       urlCell.value = { text: url, hyperlink: url };
       urlCell.font = { color: { argb: 'FF0563C1' }, underline: true };
@@ -181,29 +223,33 @@ export async function exportCrimeListExcel(
     const captureFilename = getCaptureFilename(post.captureFilePath);
     if (captureFilename) {
       const captureCell = row.getCell(CAPTURE_COLUMN);
+      const safeFilename = sanitizeExcelText(captureFilename);
       captureCell.value = {
-        text: captureFilename,
-        hyperlink: toSameFolderCaptureHyperlink(captureFilename),
+        text: safeFilename,
+        hyperlink: toSameFolderCaptureHyperlink(safeFilename),
       };
       captureCell.font = { color: { argb: 'FF0563C1' }, underline: true };
     }
 
     if (post.captureImageBase64) {
-      const dimensions = await getImageDimensions(post.captureImageBase64);
-      const thumbnail = fitThumbnailSize(
-        dimensions.width,
-        dimensions.height,
-        THUMBNAIL_MAX_WIDTH_PX,
-        rowHeightToThumbnailMaxPx(rowHeight)
+      const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
+      const cellWidthPx = columnWidthToPixels(thumbnailColumnWidth);
+      const cellHeightPx = rowHeightToPixels(rowHeight);
+      const thumbnail = await cropThumbnailToPngBase64(
+        post.captureImageBase64,
+        cellWidthPx,
+        cellHeightPx
       );
       const imageId = workbook.addImage({
-        base64: post.captureImageBase64,
+        base64: thumbnail.base64,
         extension: 'png',
       });
+      const tlCol = THUMBNAIL_COLUMN - 1;
+      const tlRow = index + 2;
       sheet.addImage(imageId, {
-        tl: { col: THUMBNAIL_COLUMN - 1, row: index + 2 },
-        ext: { width: thumbnail.width, height: thumbnail.height },
-      });
+        tl: { col: tlCol, row: tlRow },
+        br: { col: tlCol + 1, row: tlRow + 1 },
+      } as ExcelJS.ImageRange);
     }
   }
 

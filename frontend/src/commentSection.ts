@@ -25,11 +25,3 @@ export function extractCommentsSection(content: string): string {
 
   return content.slice(index + COMMENTS_MARKER.length).replace(/^\n/, '');
 }
-
-export function addSpacingBetweenLines(text: string): string {
-  if (!text) {
-    return '';
-  }
-
-  return text.split('\n').join('\n\n');
-}

@@ -283,7 +283,7 @@ public class ScreenshotService {
         }
     }
 
-    // 본문 + 댓글 전체 페이지 캡처 (댓글 페이지네이션 포함)
+    // 본문 + 댓글 전체 페이지 캡처 (댓글 페이지네이션 포함, 열 단위 즉시 병합)
     private byte[] captureWithCommentPages(ChromeDriver driver, WebElement captureTarget, String postNo)
             throws InterruptedException, IOException {
         List<Integer> commentPages = detectCommentPages(driver, postNo);
@@ -291,8 +291,9 @@ public class ScreenshotService {
             return captureRegionScreenshot(driver, captureTarget, postNo);
         }
 
-        List<byte[]> segments = new ArrayList<>();
-        segments.add(captureRegionScreenshot(driver, captureTarget, postNo));
+        List<byte[]> completedColumns = new ArrayList<>();
+        byte[] currentColumn = captureRegionScreenshot(driver, captureTarget, postNo);
+        int capturedPageCount = 1;
 
         for (int page : commentPages) {
             if (page == 1) {
@@ -300,58 +301,31 @@ public class ScreenshotService {
             }
             goToCommentPage(driver, postNo, page);
             waitForCommentPage(driver, postNo, page);
-            segments.add(captureCommentPageScreenshot(driver, postNo));
-        }
+            byte[] pageCapture = captureCommentPageScreenshot(driver, postNo);
+            capturedPageCount++;
 
-        if (segments.size() == 1) {
-            return segments.get(0);
+            int currentHeight = getImageHeight(currentColumn);
+            int pageHeight = getImageHeight(pageCapture);
+            if (currentHeight + pageHeight > MAX_STITCHED_HEIGHT) {
+                completedColumns.add(currentColumn);
+                currentColumn = pageCapture;
+            } else {
+                currentColumn = appendVertically(currentColumn, pageCapture);
+            }
         }
+        completedColumns.add(currentColumn);
 
-        List<List<byte[]>> columns = distributeIntoColumns(segments);
         log.info(
                 "댓글 {}페이지 캡처 후 {}열로 이미지 병합 (총 {}장)",
                 commentPages.size(),
-                columns.size(),
-                segments.size()
+                completedColumns.size(),
+                capturedPageCount
         );
-        return stitchColumns(columns);
-    }
 
-    private List<List<byte[]>> distributeIntoColumns(List<byte[]> segments) throws IOException {
-        List<List<byte[]>> columns = new ArrayList<>();
-        List<byte[]> currentColumn = new ArrayList<>();
-        int currentColumnHeight = 0;
-
-        for (byte[] segment : segments) {
-            int segmentHeight = getImageHeight(segment);
-            if (!currentColumn.isEmpty() && currentColumnHeight + segmentHeight > MAX_STITCHED_HEIGHT) {
-                columns.add(currentColumn);
-                currentColumn = new ArrayList<>();
-                currentColumnHeight = 0;
-            }
-            currentColumn.add(segment);
-            currentColumnHeight += segmentHeight;
+        if (completedColumns.size() == 1) {
+            return completedColumns.get(0);
         }
-
-        if (!currentColumn.isEmpty()) {
-            columns.add(currentColumn);
-        }
-        return columns;
-    }
-
-    private byte[] stitchColumns(List<List<byte[]>> columns) throws IOException {
-        if (columns.isEmpty()) {
-            throw new IOException("병합할 캡처 열이 없습니다.");
-        }
-        if (columns.size() == 1) {
-            return stitchVertically(columns.get(0));
-        }
-
-        List<byte[]> columnImages = new ArrayList<>();
-        for (List<byte[]> column : columns) {
-            columnImages.add(column.size() == 1 ? column.get(0) : stitchVertically(column));
-        }
-        return stitchHorizontally(columnImages);
+        return stitchHorizontally(completedColumns);
     }
 
     @SuppressWarnings("unchecked")
@@ -531,27 +505,18 @@ public class ScreenshotService {
         return readBufferedImage(pngBytes).getHeight();
     }
 
-    private byte[] stitchVertically(List<byte[]> segments) throws IOException {
-        List<BufferedImage> images = new ArrayList<>();
-        int totalWidth = 0;
-        int totalHeight = 0;
-        for (byte[] segment : segments) {
-            BufferedImage image = readBufferedImage(segment);
-            images.add(image);
-            totalWidth = Math.max(totalWidth, image.getWidth());
-            totalHeight += image.getHeight();
-        }
+    private byte[] appendVertically(byte[] topImage, byte[] bottomImage) throws IOException {
+        BufferedImage top = readBufferedImage(topImage);
+        BufferedImage bottom = readBufferedImage(bottomImage);
+        int totalWidth = Math.max(top.getWidth(), bottom.getWidth());
+        int totalHeight = top.getHeight() + bottom.getHeight();
 
         BufferedImage combined = new BufferedImage(totalWidth, totalHeight, BufferedImage.TYPE_INT_RGB);
         Graphics2D graphics = combined.createGraphics();
         graphics.setColor(java.awt.Color.WHITE);
         graphics.fillRect(0, 0, totalWidth, totalHeight);
-
-        int y = 0;
-        for (BufferedImage image : images) {
-            graphics.drawImage(image, 0, y, null);
-            y += image.getHeight();
-        }
+        graphics.drawImage(top, 0, 0, null);
+        graphics.drawImage(bottom, 0, top.getHeight(), null);
         graphics.dispose();
 
         ByteArrayOutputStream output = new ByteArrayOutputStream();
