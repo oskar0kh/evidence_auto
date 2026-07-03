@@ -35,6 +35,7 @@ const HEADER_FONT = {
 };
 
 const MIN_ROW_HEIGHT = 24;
+const MAX_ROW_HEIGHT = 250;
 const LINE_HEIGHT_PT = 15;
 const ROW_PADDING_PT = 10;
 const EXCEL_MAX_CELL_CHARS = 32767;
@@ -77,7 +78,8 @@ function calculateRowHeight(values: unknown[]): number {
     maxLines = Math.max(maxLines, lines);
   });
 
-  return Math.max(MIN_ROW_HEIGHT, maxLines * LINE_HEIGHT_PT + ROW_PADDING_PT);
+  const contentHeight = maxLines * LINE_HEIGHT_PT + ROW_PADDING_PT;
+  return Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, contentHeight));
 }
 
 /** Excel 열 너비(문자 단위) → 화면 픽셀 (Calibri 11pt 기준) */
@@ -90,48 +92,33 @@ function rowHeightToPixels(rowHeightPt: number): number {
   return Math.max(1, Math.floor((rowHeightPt * 96) / 72));
 }
 
+/** 원본 크기(1:1)로 셀 좌상단에 배치하고, 셀 경계를 벗어나는 부분은 잘라냅니다. */
 function cropThumbnailToPngBase64(
   base64: string,
-  maxWidthPx: number,
-  maxHeightPx: number
+  cellWidthPx: number,
+  cellHeightPx: number
 ): Promise<{ base64: string; width: number; height: number }> {
   return new Promise((resolve, reject) => {
     const image = new Image();
     image.onload = () => {
-      const naturalWidth = image.naturalWidth;
-      const naturalHeight = image.naturalHeight;
-      const scale = Math.max(maxWidthPx / naturalWidth, maxHeightPx / naturalHeight);
-      const sourceWidth = maxWidthPx / scale;
-      const sourceHeight = maxHeightPx / scale;
-
       const canvas = document.createElement('canvas');
-      canvas.width = maxWidthPx;
-      canvas.height = maxHeightPx;
+      canvas.width = cellWidthPx;
+      canvas.height = cellHeightPx;
       const ctx = canvas.getContext('2d');
       if (!ctx) {
         reject(new Error('캔버스를 사용할 수 없습니다.'));
         return;
       }
       ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, maxWidthPx, maxHeightPx);
-      ctx.drawImage(
-        image,
-        0,
-        0,
-        sourceWidth,
-        sourceHeight,
-        0,
-        0,
-        maxWidthPx,
-        maxHeightPx
-      );
+      ctx.fillRect(0, 0, cellWidthPx, cellHeightPx);
+      ctx.drawImage(image, 0, 0);
 
       const dataUrl = canvas.toDataURL('image/png');
       const commaIndex = dataUrl.indexOf(',');
       resolve({
         base64: commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl,
-        width: maxWidthPx,
-        height: maxHeightPx,
+        width: cellWidthPx,
+        height: cellHeightPx,
       });
     };
     image.onerror = () => reject(new Error('캡처 이미지를 읽을 수 없습니다.'));
