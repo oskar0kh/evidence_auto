@@ -151,6 +151,33 @@
   background: #047857;
 }
 
+.btn-with-spinner {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+}
+
+.btn-with-spinner .btn-label {
+  line-height: 1.2;
+}
+
+.btn-spinner {
+  width: 1rem;
+  height: 1rem;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: btn-spinner-spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes btn-spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .message.error {
   background: #fef2f2;
   color: #b91c1c;

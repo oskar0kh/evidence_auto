@@ -61,6 +61,7 @@ export default function App() {
   const saveDirectoryRef = useRef<FileSystemDirectoryHandle | null>(null);
   const [saveDirectoryPath, setSaveDirectoryPath] = useState('');
   const [loading, setLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [progress, setProgress] = useState<CrawlProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [savedResults, setSavedResults] = useState<DcinsidePostData[]>([]);
@@ -201,6 +202,7 @@ export default function App() {
       setError('저장 폴더를 선택해 주세요.');
       return;
     }
+    setSaving(true);
     try {
       const postsForExcel = savedResults.map((post) => ({
         ...post,
@@ -214,6 +216,8 @@ export default function App() {
     } catch (e) {
       const message = e instanceof Error ? e.message : '엑셀 생성 중 오류가 발생했습니다.';
       setError(message);
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -266,11 +270,13 @@ export default function App() {
             </button>
             <button
               type="button"
-              className="btn secondary"
-              onClick={handleSaveExcel}
-              disabled={loading || savedResults.length === 0}
+              className="btn secondary btn-with-spinner"
+              onClick={() => void handleSaveExcel()}
+              disabled={loading || saving || savedResults.length === 0}
+              aria-busy={saving}
             >
-              범죄일람표, 캡처화면 저장
+              <span className="btn-label">범죄일람표, 캡처화면 저장</span>
+              {saving && <span className="btn-spinner" aria-hidden="true" />}
             </button>
             <span className="saved-count">현재까지 저장된 링크 개수: {savedResults.length}</span>
           </div>
