@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
-import { crawlDcinsideStream, searchDcinside } from './api';
+import { crawlDcinsideStream, searchDcinsideAllTerms } from './api';
 import { saveCapturesToDirectory } from './captureFiles';
 import {
   aggregateStepTimings,
@@ -282,11 +282,23 @@ export default function App() {
 
     try {
       lastSearchKeywordRef.current = query;
-      const searchResult = await searchDcinside(query, {
-        maxResults: 100,
-        startDate: useDateRange ? searchStartDate : undefined,
-        endDate: useDateRange ? searchEndDate : undefined,
-      });
+      const searchResult = await searchDcinsideAllTerms(
+        query,
+        {
+          maxResults: 100,
+          startDate: useDateRange ? searchStartDate : undefined,
+          endDate: useDateRange ? searchEndDate : undefined,
+        },
+        ({ termIndex, termTotal, term, collectedUrlCount }) => {
+          setProgress({
+            completed: termIndex - 1,
+            total: termTotal,
+            currentUrl: `검색어 ${termIndex}/${termTotal}: "${term}" (수집 URL ${collectedUrlCount}건)`,
+            successCount: 0,
+            failCount: 0,
+          });
+        }
+      );
       logContext.searchMs = searchResult.searchMs;
 
       if (searchResult.urls.length === 0) {
@@ -506,12 +518,12 @@ export default function App() {
             disabled={loading}
           />
 
-          <label htmlFor="search-input">통합검색어</label>
+          <label htmlFor="search-input">통합검색어 (쉼표·공백으로 OR 검색)</label>
           <input
             id="search-input"
             className="search-input"
             type="text"
-            placeholder="검색어를 입력하면 디시 통합검색 결과를 크롤링합니다"
+            placeholder="예: 사기, 피해 또는 사기 피해 (각 검색어 결과를 합쳐 수집)"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
             disabled={loading}
@@ -526,8 +538,9 @@ export default function App() {
             disabled={loading}
           />
           <p className="field-hint search-hint">
-            URL 입력과 검색어 입력은 별도입니다. 기간을 지정하지 않으면 디시 통합검색(최신순) 기준 최대
-            100건까지 수집합니다. 기간을 지정하면 해당 기간의 결과를 페이지 단위로 모두 수집한 뒤
+            URL 입력과 검색어 입력은 별도입니다. 검색어를 쉼표(,)나 공백으로 나누면 OR 조건으로 각각
+            검색한 뒤 결과 URL을 합칩니다. 기간을 지정하지 않으면 검색어당 최대 100건(최신순)까지
+            수집합니다. 기간을 지정하면 검색어당 해당 기간의 결과를 페이지 단위로 모두 수집한 뒤
             100개씩 배치로 크롤링합니다.
           </p>
 

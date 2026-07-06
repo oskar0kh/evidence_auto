@@ -36,7 +36,7 @@ import java.util.function.Consumer;
 public class CrawlController {
 
     private static final Logger log = LoggerFactory.getLogger(CrawlController.class);
-    private static final long SSE_TIMEOUT_MS = 3_600_000L;
+    private static final long SSE_TIMEOUT_MS = 43_200_000L; // SSE 타임아웃 - 12시간
 
     private final DcinsideCrawlService crawlService;
     private final ScreenshotService screenshotService;

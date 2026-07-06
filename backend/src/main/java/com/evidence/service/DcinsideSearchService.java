@@ -30,6 +30,7 @@ public class DcinsideSearchService {
     private static final int DEFAULT_MAX_RESULTS = 100;
     private static final int MAX_PAGE_LIMIT = 10;
     private static final int MAX_DATE_RANGE_PAGE_LIMIT = 500;
+    private static final int TERM_SEARCH_DELAY_MS = 500;
 
     private static final DateTimeFormatter SEARCH_RESULT_DATE_FORMAT =
             DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm");
@@ -40,13 +41,75 @@ public class DcinsideSearchService {
     );
 
     public List<String> searchIntegrated(String query, Integer maxResults) throws Exception {
-        String trimmed = query == null ? "" : query.trim();
-        if (trimmed.isEmpty()) {
+        List<String> terms = parseSearchTerms(query);
+        Set<String> collected = new LinkedHashSet<>();
+
+        for (int i = 0; i < terms.size(); i++) {
+            collected.addAll(searchIntegratedSingle(terms.get(i), maxResults));
+            if (i < terms.size() - 1) {
+                Thread.sleep(TERM_SEARCH_DELAY_MS);
+            }
+        }
+
+        return new ArrayList<>(collected);
+    }
+
+    public List<String> searchIntegratedByDateRange(String query, LocalDate startDate, LocalDate endDate)
+            throws Exception {
+        if (startDate == null || endDate == null) {
+            throw new IllegalArgumentException("검색 기간의 시작일과 종료일을 모두 입력해 주세요.");
+        }
+        if (startDate.isAfter(endDate)) {
+            throw new IllegalArgumentException("검색 기간의 시작일은 종료일보다 이후일 수 없습니다.");
+        }
+
+        List<String> terms = parseSearchTerms(query);
+        Set<String> collected = new LinkedHashSet<>();
+
+        for (int i = 0; i < terms.size(); i++) {
+            collected.addAll(searchIntegratedByDateRangeSingle(terms.get(i), startDate, endDate));
+            if (i < terms.size() - 1) {
+                Thread.sleep(TERM_SEARCH_DELAY_MS);
+            }
+        }
+
+        return new ArrayList<>(collected);
+    }
+
+    public static List<String> parseSearchTerms(String query) {
+        if (query == null || query.isBlank()) {
             throw new IllegalArgumentException("검색어를 입력해 주세요.");
         }
 
+        String[] parts = query.trim().split("[,\\s]+");
+        List<String> terms = new ArrayList<>();
+        for (String part : parts) {
+            String term = part.trim();
+            if (!term.isEmpty()) {
+                terms.add(term);
+            }
+        }
+
+        if (terms.isEmpty()) {
+            throw new IllegalArgumentException("검색어를 입력해 주세요.");
+        }
+        return terms;
+    }
+
+    public static LocalDate parseRequestDate(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(value.trim(), REQUEST_DATE_FORMAT);
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException("날짜 형식은 yyyy-MM-dd 이어야 합니다: " + value);
+        }
+    }
+
+    private List<String> searchIntegratedSingle(String term, Integer maxResults) throws Exception {
         int limit = maxResults == null || maxResults <= 0 ? DEFAULT_MAX_RESULTS : Math.min(maxResults, DEFAULT_MAX_RESULTS);
-        String encodedQuery = URLEncoder.encode(trimmed, StandardCharsets.UTF_8);
+        String encodedQuery = URLEncoder.encode(term, StandardCharsets.UTF_8);
 
         HttpClient client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
@@ -69,27 +132,16 @@ public class DcinsideSearchService {
             }
 
             if (page < MAX_PAGE_LIMIT && collected.size() < limit) {
-                Thread.sleep(500);
+                Thread.sleep(TERM_SEARCH_DELAY_MS);
             }
         }
 
         return new ArrayList<>(collected);
     }
 
-    public List<String> searchIntegratedByDateRange(String query, LocalDate startDate, LocalDate endDate)
+    private List<String> searchIntegratedByDateRangeSingle(String term, LocalDate startDate, LocalDate endDate)
             throws Exception {
-        String trimmed = query == null ? "" : query.trim();
-        if (trimmed.isEmpty()) {
-            throw new IllegalArgumentException("검색어를 입력해 주세요.");
-        }
-        if (startDate == null || endDate == null) {
-            throw new IllegalArgumentException("검색 기간의 시작일과 종료일을 모두 입력해 주세요.");
-        }
-        if (startDate.isAfter(endDate)) {
-            throw new IllegalArgumentException("검색 기간의 시작일은 종료일보다 이후일 수 없습니다.");
-        }
-
-        String encodedQuery = URLEncoder.encode(trimmed, StandardCharsets.UTF_8);
+        String encodedQuery = URLEncoder.encode(term, StandardCharsets.UTF_8);
         HttpClient client = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .build();
@@ -121,22 +173,11 @@ public class DcinsideSearchService {
             }
 
             if (!reachedOlderThanRange && page < MAX_DATE_RANGE_PAGE_LIMIT) {
-                Thread.sleep(500);
+                Thread.sleep(TERM_SEARCH_DELAY_MS);
             }
         }
 
         return new ArrayList<>(collected);
-    }
-
-    public static LocalDate parseRequestDate(String value) {
-        if (value == null || value.isBlank()) {
-            return null;
-        }
-        try {
-            return LocalDate.parse(value.trim(), REQUEST_DATE_FORMAT);
-        } catch (DateTimeParseException e) {
-            throw new IllegalArgumentException("날짜 형식은 yyyy-MM-dd 이어야 합니다: " + value);
-        }
     }
 
     private Document fetchDocument(HttpClient client, String url) throws Exception {

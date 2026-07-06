@@ -1,10 +1,16 @@
 import axios from 'axios';
 import { parseSseChunk } from './sse';
+import { parseSearchTerms } from './searchUtils';
 import type { CrawlProgressEvent, CrawlResponse, SearchOptions, SearchResponse } from './types';
 
 const api = axios.create({
   baseURL: '/api',
   timeout: 300000,
+});
+
+const searchApi = axios.create({
+  baseURL: '/api',
+  timeout: 0,
 });
 
 export async function crawlDcinsideStream(
@@ -86,11 +92,57 @@ export async function searchDcinside(
   options: SearchOptions = {}
 ): Promise<SearchResponse> {
   const { maxResults = 100, startDate, endDate } = options;
-  const { data } = await api.post<SearchResponse>('/search/dcinside', {
+  const { data } = await searchApi.post<SearchResponse>('/search/dcinside', {
     query,
     maxResults,
     startDate: startDate ?? null,
     endDate: endDate ?? null,
   });
   return data;
+}
+
+export interface SearchAllTermsProgress {
+  termIndex: number;
+  termTotal: number;
+  term: string;
+  collectedUrlCount: number;
+}
+
+export async function searchDcinsideAllTerms(
+  query: string,
+  options: SearchOptions = {},
+  onProgress?: (progress: SearchAllTermsProgress) => void
+): Promise<SearchResponse> {
+  const terms = parseSearchTerms(query);
+  if (terms.length === 0) {
+    throw new Error('검색어를 입력해 주세요.');
+  }
+
+  const merged = new Set<string>();
+  let totalSearchMs = 0;
+
+  for (let i = 0; i < terms.length; i++) {
+    const term = terms[i];
+    onProgress?.({
+      termIndex: i + 1,
+      termTotal: terms.length,
+      term,
+      collectedUrlCount: merged.size,
+    });
+
+    const result = await searchDcinside(term, options);
+    totalSearchMs += result.searchMs ?? 0;
+    for (const url of result.urls) {
+      merged.add(url);
+    }
+  }
+
+  return {
+    urls: [...merged],
+    count: merged.size,
+    searchMs: totalSearchMs,
+    dateRangeSearch: Boolean(options.startDate && options.endDate),
+    startDate: options.startDate,
+    endDate: options.endDate,
+  };
 }
