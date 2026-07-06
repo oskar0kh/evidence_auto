@@ -11,6 +11,7 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.time.LocalDate;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -32,12 +33,26 @@ public class SearchController {
     public ResponseEntity<?> searchDcinside(@RequestBody SearchRequest request) {
         long searchStartNanos = System.nanoTime();
         try {
-            List<String> urls = searchService.searchIntegrated(request.query(), request.maxResults());
+            List<String> urls;
+            boolean dateRangeSearch = hasDateRange(request);
+            if (dateRangeSearch) {
+                LocalDate startDate = DcinsideSearchService.parseRequestDate(request.startDate());
+                LocalDate endDate = DcinsideSearchService.parseRequestDate(request.endDate());
+                urls = searchService.searchIntegratedByDateRange(request.query(), startDate, endDate);
+            } else {
+                urls = searchService.searchIntegrated(request.query(), request.maxResults());
+            }
+
             long searchMs = (System.nanoTime() - searchStartNanos) / 1_000_000;
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("urls", urls);
             body.put("count", urls.size());
             body.put("searchMs", searchMs);
+            body.put("dateRangeSearch", dateRangeSearch);
+            if (dateRangeSearch) {
+                body.put("startDate", request.startDate());
+                body.put("endDate", request.endDate());
+            }
             return ResponseEntity.ok(body);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
@@ -47,6 +62,15 @@ public class SearchController {
                     "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
             ));
         }
+    }
+
+    private static boolean hasDateRange(SearchRequest request) {
+        boolean hasStart = request.startDate() != null && !request.startDate().isBlank();
+        boolean hasEnd = request.endDate() != null && !request.endDate().isBlank();
+        if (hasStart != hasEnd) {
+            throw new IllegalArgumentException("검색 기간의 시작일과 종료일을 모두 입력해 주세요.");
+        }
+        return hasStart;
     }
 
     @ExceptionHandler(Exception.class)

@@ -12,6 +12,9 @@ import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDate;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -26,6 +29,11 @@ public class DcinsideSearchService {
 
     private static final int DEFAULT_MAX_RESULTS = 100;
     private static final int MAX_PAGE_LIMIT = 10;
+    private static final int MAX_DATE_RANGE_PAGE_LIMIT = 500;
+
+    private static final DateTimeFormatter SEARCH_RESULT_DATE_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm");
+    private static final DateTimeFormatter REQUEST_DATE_FORMAT = DateTimeFormatter.ISO_LOCAL_DATE;
 
     private static final Pattern POST_URL_PATTERN = Pattern.compile(
             "https?://(?:m\\.)?gall\\.dcinside\\.com/(?:mgallery/board|mini/board|board)/view/\\?.*"
@@ -48,15 +56,13 @@ public class DcinsideSearchService {
         for (int page = 1; page <= MAX_PAGE_LIMIT && collected.size() < limit; page++) {
             String searchUrl = "https://search.dcinside.com/post/p/" + page + "/q/" + encodedQuery;
             Document doc = fetchDocument(client, searchUrl);
-            Elements resultLinks = doc.select("ul.sch_result_list a.tit_txt");
-            if (resultLinks.isEmpty()) {
+            List<SearchResultItem> pageResults = extractPageResults(doc);
+            if (pageResults.isEmpty()) {
                 break;
             }
 
-            List<String> pageUrls = extractPostUrls(resultLinks);
-
-            for (String url : pageUrls) {
-                collected.add(url);
+            for (SearchResultItem item : pageResults) {
+                collected.add(item.url());
                 if (collected.size() >= limit) {
                     break;
                 }
@@ -68,6 +74,69 @@ public class DcinsideSearchService {
         }
 
         return new ArrayList<>(collected);
+    }
+
+    public List<String> searchIntegratedByDateRange(String query, LocalDate startDate, LocalDate endDate)
+            throws Exception {
+        String trimmed = query == null ? "" : query.trim();
+        if (trimmed.isEmpty()) {
+            throw new IllegalArgumentException("검색어를 입력해 주세요.");
+        }
+        if (startDate == null || endDate == null) {
+            throw new IllegalArgumentException("검색 기간의 시작일과 종료일을 모두 입력해 주세요.");
+        }
+        if (startDate.isAfter(endDate)) {
+            throw new IllegalArgumentException("검색 기간의 시작일은 종료일보다 이후일 수 없습니다.");
+        }
+
+        String encodedQuery = URLEncoder.encode(trimmed, StandardCharsets.UTF_8);
+        HttpClient client = HttpClient.newBuilder()
+                .followRedirects(HttpClient.Redirect.NORMAL)
+                .build();
+
+        Set<String> collected = new LinkedHashSet<>();
+        boolean reachedOlderThanRange = false;
+
+        for (int page = 1; page <= MAX_DATE_RANGE_PAGE_LIMIT && !reachedOlderThanRange; page++) {
+            String searchUrl = "https://search.dcinside.com/post/p/" + page + "/q/" + encodedQuery;
+            Document doc = fetchDocument(client, searchUrl);
+            List<SearchResultItem> pageResults = extractPageResults(doc);
+            if (pageResults.isEmpty()) {
+                break;
+            }
+
+            for (SearchResultItem item : pageResults) {
+                LocalDate postDate = item.postDate();
+                if (postDate == null) {
+                    continue;
+                }
+                if (postDate.isAfter(endDate)) {
+                    continue;
+                }
+                if (postDate.isBefore(startDate)) {
+                    reachedOlderThanRange = true;
+                    break;
+                }
+                collected.add(item.url());
+            }
+
+            if (!reachedOlderThanRange && page < MAX_DATE_RANGE_PAGE_LIMIT) {
+                Thread.sleep(500);
+            }
+        }
+
+        return new ArrayList<>(collected);
+    }
+
+    public static LocalDate parseRequestDate(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(value.trim(), REQUEST_DATE_FORMAT);
+        } catch (DateTimeParseException e) {
+            throw new IllegalArgumentException("날짜 형식은 yyyy-MM-dd 이어야 합니다: " + value);
+        }
     }
 
     private Document fetchDocument(HttpClient client, String url) throws Exception {
@@ -86,19 +155,42 @@ public class DcinsideSearchService {
         return Jsoup.parse(response.body(), url);
     }
 
-    private List<String> extractPostUrls(Elements links) {
-        List<String> urls = new ArrayList<>();
-        for (Element link : links) {
+    private List<SearchResultItem> extractPageResults(Document doc) {
+        Elements items = doc.select("ul.sch_result_list > li");
+        List<SearchResultItem> results = new ArrayList<>();
+        for (Element item : items) {
+            Element link = item.selectFirst("a.tit_txt");
+            if (link == null) {
+                continue;
+            }
             String href = link.attr("href").trim();
             if (href.isEmpty()) {
                 continue;
             }
             String normalized = normalizePostUrl(href);
-            if (POST_URL_PATTERN.matcher(normalized).find()) {
-                urls.add(normalized);
+            if (!POST_URL_PATTERN.matcher(normalized).find()) {
+                continue;
             }
+
+            LocalDate postDate = null;
+            Element dateElement = item.selectFirst("span.date_time");
+            if (dateElement != null) {
+                postDate = parseSearchResultDate(dateElement.text().trim());
+            }
+            results.add(new SearchResultItem(normalized, postDate));
         }
-        return urls;
+        return results;
+    }
+
+    private LocalDate parseSearchResultDate(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return LocalDate.parse(raw, SEARCH_RESULT_DATE_FORMAT);
+        } catch (DateTimeParseException e) {
+            return null;
+        }
     }
 
     private String normalizePostUrl(String url) {
@@ -109,5 +201,8 @@ public class DcinsideSearchService {
             return "https://gall.dcinside.com" + url;
         }
         return url.replace("http://", "https://");
+    }
+
+    private record SearchResultItem(String url, LocalDate postDate) {
     }
 }

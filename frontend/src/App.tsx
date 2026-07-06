@@ -11,6 +11,7 @@ import {
   pickFirstStepMs,
   pickStepMs,
 } from './crawlLogExport';
+import DateRangeInput from './DateRangeInput';
 import { exportCrimeListExcel } from './excelExport';
 import { getOrCreateSubdirectory } from './localFileStorage';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './nativeFolderPicker';
@@ -74,6 +75,27 @@ function formatDuration(ms: number): string {
   return `${minutes}분 ${seconds}초`;
 }
 
+const CRAWL_BATCH_SIZE = 100;
+
+function chunkUrls(urls: string[], size: number): string[][] {
+  const batches: string[][] = [];
+  for (let i = 0; i < urls.length; i += size) {
+    batches.push(urls.slice(i, i + size));
+  }
+  return batches;
+}
+
+function hasPartialDateRange(startDate: string, endDate: string): boolean {
+  return Boolean(startDate) !== Boolean(endDate);
+}
+
+function isValidDateRange(startDate: string, endDate: string): boolean {
+  if (!startDate || !endDate) {
+    return true;
+  }
+  return startDate <= endDate;
+}
+
 interface CrawlProgress {
   completed: number;
   total: number;
@@ -134,6 +156,8 @@ async function saveCrawlLog(
 export default function App() {
   const [urlInput, setUrlInput] = useState('');
   const [searchInput, setSearchInput] = useState('');
+  const [searchStartDate, setSearchStartDate] = useState('');
+  const [searchEndDate, setSearchEndDate] = useState('');
   const saveDirectoryRef = useRef<FileSystemDirectoryHandle | null>(null);
   const [saveDirectoryPath, setSaveDirectoryPath] = useState('');
   const [loading, setLoading] = useState(false);
@@ -210,9 +234,19 @@ export default function App() {
       setError('검색어를 입력해 주세요.');
       return;
     }
+    if (hasPartialDateRange(searchStartDate, searchEndDate)) {
+      setError('검색 기간의 시작일과 종료일을 모두 입력해 주세요.');
+      return;
+    }
+    if (!isValidDateRange(searchStartDate, searchEndDate)) {
+      setError('검색 기간의 시작일은 종료일보다 이후일 수 없습니다.');
+      return;
+    }
     if (!ensureSaveDirectorySelected()) {
       return;
     }
+
+    const useDateRange = Boolean(searchStartDate && searchEndDate);
 
     crawlStartAtRef.current = Date.now();
     setElapsedMs(0);
@@ -222,23 +256,27 @@ export default function App() {
     setProgress({
       completed: 0,
       total: 1,
-      currentUrl: '디시 통합검색 중…',
+      currentUrl: useDateRange ? '기간 내 디시 통합검색 중…' : '디시 통합검색 중…',
       successCount: 0,
       failCount: 0,
     });
 
     const logContext: CrawlLogContext = {
-      keyword: query,
-      inputMode: '검색어',
+      keyword: useDateRange ? `${query} (${searchStartDate}~${searchEndDate})` : query,
+      inputMode: useDateRange ? '검색어+기간' : '검색어',
     };
 
     try {
       lastSearchKeywordRef.current = query;
-      const searchResult = await searchDcinside(query, 100);
+      const searchResult = await searchDcinside(query, {
+        maxResults: 100,
+        startDate: useDateRange ? searchStartDate : undefined,
+        endDate: useDateRange ? searchEndDate : undefined,
+      });
       logContext.searchMs = searchResult.searchMs;
 
       if (searchResult.urls.length === 0) {
-        setError('검색 결과가 없습니다.');
+        setError(useDateRange ? '지정한 기간에 해당하는 검색 결과가 없습니다.' : '검색 결과가 없습니다.');
         await saveCrawlLog(
           saveDirectoryRef.current,
           logContext,
@@ -255,6 +293,7 @@ export default function App() {
 
       await runCrawlForUrls(searchResult.urls, {
         clearSearchInput: true,
+        clearSearchDates: true,
         skipInit: true,
         logContext,
       });
@@ -283,6 +322,7 @@ export default function App() {
     options?: {
       clearUrlInput?: boolean;
       clearSearchInput?: boolean;
+      clearSearchDates?: boolean;
       skipInit?: boolean;
       logContext?: CrawlLogContext;
     }
@@ -311,19 +351,22 @@ export default function App() {
     });
 
     try {
-      for (let i = 0; i < urls.length; i++) {
-        const url = urls[i];
+      const batches = chunkUrls(urls, CRAWL_BATCH_SIZE);
+      let processedCount = 0;
+
+      for (const batch of batches) {
+        const batchStartIndex = processedCount;
         setProgress({
-          completed: i,
+          completed: batchStartIndex,
           total: urls.length,
-          currentUrl: url,
+          currentUrl: batch[0],
           successCount,
           failCount: batchErrors.length,
         });
 
         try {
           const startSerial = savedResults.length + successCount + 1;
-          const response = await crawlDcinside([url], startSerial);
+          const response = await crawlDcinside(batch, startSerial);
           if (response.data.length > 0) {
             successCount += response.data.length;
             setSavedResults((prev) => mergeSavedResults(prev, response.data));
@@ -334,13 +377,16 @@ export default function App() {
           }
         } catch (e) {
           const message = resolveCrawlError(e);
-          batchErrors.push({ url, error: message });
+          for (const url of batch) {
+            batchErrors.push({ url, error: message });
+          }
         }
 
+        processedCount += batch.length;
         setProgress({
-          completed: i + 1,
+          completed: processedCount,
           total: urls.length,
-          currentUrl: url,
+          currentUrl: batch[batch.length - 1],
           successCount,
           failCount: batchErrors.length,
         });
@@ -372,6 +418,10 @@ export default function App() {
       }
       if (options?.clearSearchInput) {
         setSearchInput('');
+      }
+      if (options?.clearSearchDates) {
+        setSearchStartDate('');
+        setSearchEndDate('');
       }
     }
   };
@@ -454,7 +504,7 @@ export default function App() {
             disabled={loading}
           />
 
-          <label htmlFor="search-input">통합검색어 (최대 100건)</label>
+          <label htmlFor="search-input">통합검색어</label>
           <input
             id="search-input"
             className="search-input"
@@ -464,8 +514,19 @@ export default function App() {
             onChange={(e) => setSearchInput(e.target.value)}
             disabled={loading}
           />
+
+          <label htmlFor="search-start-date">검색 기간 (선택, yyyy-mm-dd)</label>
+          <DateRangeInput
+            startDate={searchStartDate}
+            endDate={searchEndDate}
+            onStartDateChange={setSearchStartDate}
+            onEndDateChange={setSearchEndDate}
+            disabled={loading}
+          />
           <p className="field-hint search-hint">
-            URL 입력과 검색어 입력은 별도입니다. 검색은 디시 통합검색(최신순) 기준이며 최대 100건까지 수집합니다.
+            URL 입력과 검색어 입력은 별도입니다. 기간을 지정하지 않으면 디시 통합검색(최신순) 기준 최대
+            100건까지 수집합니다. 기간을 지정하면 해당 기간의 결과를 페이지 단위로 모두 수집한 뒤
+            100개씩 배치로 크롤링합니다.
           </p>
 
           <label htmlFor="save-directory">저장 폴더 (캡처·엑셀)</label>

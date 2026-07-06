@@ -41,12 +41,21 @@ export interface SearchResponse {
   urls: string[];
   count: number;
   searchMs?: number;
+  dateRangeSearch?: boolean;
+  startDate?: string;
+  endDate?: string;
+}
+
+export interface SearchOptions {
+  maxResults?: number;
+  startDate?: string;
+  endDate?: string;
 }
 
 export interface CrawlLogEntry {
   executedAt: string;
   keyword?: string;
-  inputMode: '검색어' | 'URL 직접입력';
+  inputMode: '검색어' | '검색어+기간' | 'URL 직접입력';
   attemptedCount: number;
   successCount: number;
   failCount: number;

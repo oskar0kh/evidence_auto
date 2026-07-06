@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { CrawlResponse, SearchResponse } from './types';
+import type { CrawlResponse, SearchOptions, SearchResponse } from './types';
 
 const api = axios.create({
   baseURL: '/api',
@@ -17,10 +17,16 @@ export async function crawlDcinside(
   return data;
 }
 
-export async function searchDcinside(query: string, maxResults = 100): Promise<SearchResponse> {
+export async function searchDcinside(
+  query: string,
+  options: SearchOptions = {}
+): Promise<SearchResponse> {
+  const { maxResults = 100, startDate, endDate } = options;
   const { data } = await api.post<SearchResponse>('/search/dcinside', {
     query,
     maxResults,
+    startDate: startDate ?? null,
+    endDate: endDate ?? null,
   });
   return data;
 }
