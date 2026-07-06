@@ -11,6 +11,8 @@ import org.jsoup.nodes.Element;
 import org.jsoup.nodes.Node;
 import org.jsoup.nodes.TextNode;
 import org.jsoup.select.Elements;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.net.CookieManager;
@@ -31,6 +33,8 @@ import java.util.regex.Pattern;
 
 @Service
 public class DcinsideCrawlService {
+
+    private static final Logger log = LoggerFactory.getLogger(DcinsideCrawlService.class);
 
     // 사용자 에이전트
     private static final String USER_AGENT =
@@ -68,7 +72,7 @@ public class DcinsideCrawlService {
         // 문서 파싱
         Document doc = Jsoup.parse(pageResponse.body(), normalizedUrl);
         
-        // JSON-LD 파싱
+        // JSON-LD 파싱 (실패 시 빈 노드 → HTML fallback)
         JsonNode jsonLd = parseJsonLd(doc);
         
         // 작성자 정보 파싱
@@ -97,15 +101,24 @@ public class DcinsideCrawlService {
         // 게시일자 추출
         String datePublished = textOrEmpty(jsonLd, "datePublished");
         String postDate = formatPostDate(datePublished);
+        if (postDate.isEmpty()) {
+            postDate = extractPostDateFromHtml(doc);
+        }
 
         // 조회수, 댓글 수 추출
         int viewCount = extractInteractionCount(jsonLd, "ViewAction");
+        if (viewCount == 0) {
+            viewCount = extractViewCountFromHtml(doc);
+        }
         int commentCountFromLd = extractInteractionCount(jsonLd, "CommentAction");
+        int commentCountFromHtml = extractCommentCountFromHtml(doc, postNo);
 
         // 댓글 추출
         List<CommentData> comments = fetchAllComments(client, normalizedUrl, galleryId, postNo, esno, galleryType);
         int realCommentCount = countRealComments(comments);
-        int commentCount = comments.isEmpty() ? commentCountFromLd : realCommentCount;
+        int commentCount = comments.isEmpty()
+                ? (commentCountFromLd > 0 ? commentCountFromLd : commentCountFromHtml)
+                : realCommentCount;
 
         // 작성자 정보, 내용 추출
         String nickname = formatDisplayNickname(writer.nick(), writer.ip(), writer.uid());
@@ -185,17 +198,23 @@ public class DcinsideCrawlService {
         return response;
     }
 
-    // JSON-LD 파싱
-    private JsonNode parseJsonLd(Document doc) throws Exception {
+    // JSON-LD 파싱 (디시 측 잘못된 JSON은 HTML fallback)
+    private JsonNode parseJsonLd(Document doc) {
         Elements scripts = doc.select("script[type=application/ld+json]");
         for (Element script : scripts) {
             String json = script.data();
             if (!json.contains("DiscussionForumPosting")) {
                 continue;
             }
-            return objectMapper.readTree(json);
+            try {
+                return objectMapper.readTree(json);
+            } catch (Exception e) {
+                log.warn("JSON-LD 파싱 실패, HTML fallback 사용: {}", e.getMessage());
+                return objectMapper.createObjectNode();
+            }
         }
-        throw new IllegalStateException("게시글 JSON-LD 데이터를 찾을 수 없습니다.");
+        log.warn("DiscussionForumPosting JSON-LD 없음, HTML fallback 사용");
+        return objectMapper.createObjectNode();
     }
 
     // 작성자 정보 레코드
@@ -256,6 +275,63 @@ public class DcinsideCrawlService {
             return text;
         }
         return "";
+    }
+
+    // HTML에서 게시일자 추출
+    private String extractPostDateFromHtml(Document doc) {
+        Element date = doc.selectFirst("div.gallview_head span.gall_date");
+        if (date == null) {
+            return "";
+        }
+        String title = date.attr("title").trim();
+        if (!title.isEmpty()) {
+            return formatPostDate(title);
+        }
+        Matcher matcher = Pattern.compile("(\\d{4})\\.(\\d{2})\\.(\\d{2})\\s+(\\d{2}:\\d{2}:\\d{2})")
+                .matcher(date.text().trim());
+        if (matcher.find()) {
+            return matcher.group(1) + "-" + matcher.group(2) + "-" + matcher.group(3) + " " + matcher.group(4);
+        }
+        return date.text().trim();
+    }
+
+    // HTML에서 조회수 추출
+    private int extractViewCountFromHtml(Document doc) {
+        Element count = doc.selectFirst("div.gallview_head span.gall_count");
+        if (count == null) {
+            return 0;
+        }
+        Matcher matcher = Pattern.compile("(\\d+)").matcher(count.text());
+        if (matcher.find()) {
+            return Integer.parseInt(matcher.group(1));
+        }
+        return 0;
+    }
+
+    // HTML에서 댓글 수 추출
+    private int extractCommentCountFromHtml(Document doc, String postNo) {
+        String fromHidden = extractHiddenValue(doc, "comment_cnt");
+        if (!fromHidden.isEmpty()) {
+            try {
+                return Integer.parseInt(fromHidden);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        Element total = doc.selectFirst("#comment_total_" + postNo);
+        if (total != null && !total.text().isBlank()) {
+            try {
+                return Integer.parseInt(total.text().trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        Element commentLink = doc.selectFirst("span.gall_comment a");
+        if (commentLink != null) {
+            Matcher matcher = Pattern.compile("(\\d+)").matcher(commentLink.text());
+            if (matcher.find()) {
+                return Integer.parseInt(matcher.group(1));
+            }
+        }
+        return 0;
     }
 
     // 갤러리 타입 파싱
@@ -400,6 +476,22 @@ public class DcinsideCrawlService {
             String postNo,
             String esno,
             String galleryType
+    ) {
+        try {
+            return fetchAllCommentsInternal(client, referer, galleryId, postNo, esno, galleryType);
+        } catch (Exception e) {
+            log.warn("댓글 수집 실패 ({}): {}", referer, e.getMessage());
+            return List.of();
+        }
+    }
+
+    private List<CommentData> fetchAllCommentsInternal(
+            HttpClient client,
+            String referer,
+            String galleryId,
+            String postNo,
+            String esno,
+            String galleryType
     ) throws Exception {
         List<CommentData> all = new ArrayList<>();
         int page = 1;
@@ -463,7 +555,7 @@ public class DcinsideCrawlService {
                 + "&_GALLERY_TYPE_=" + enc(galleryType);
 
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create("https://gall.dcinside.com/board/comment/"))
+                .uri(URI.create(resolveCommentApiUrl(referer, galleryType)))
                 .header("User-Agent", USER_AGENT)
                 .header("Accept", "application/json, text/javascript, */*; q=0.01")
                 .header("Accept-Language", "ko-KR,ko;q=0.9")
@@ -480,6 +572,13 @@ public class DcinsideCrawlService {
             throw new IllegalStateException("댓글 API 호출에 실패했습니다.");
         }
         return objectMapper.readTree(body);
+    }
+
+    private String resolveCommentApiUrl(String referer, String galleryType) {
+        if (referer.contains("/mini/") || "MI".equals(galleryType)) {
+            return "https://gall.dcinside.com/mini/board/comment/";
+        }
+        return "https://gall.dcinside.com/board/comment/";
     }
 
     // URL 인코딩
