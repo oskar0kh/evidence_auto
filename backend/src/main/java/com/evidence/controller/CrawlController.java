@@ -36,8 +36,6 @@ import java.util.function.Consumer;
 public class CrawlController {
 
     private static final Logger log = LoggerFactory.getLogger(CrawlController.class);
-    private static final long SSE_TIMEOUT_MS = 43_200_000L; // SSE 타임아웃 - 12시간
-
     private final DcinsideCrawlService crawlService;
     private final ScreenshotService screenshotService;
 
@@ -61,7 +59,7 @@ public class CrawlController {
 
     @PostMapping(value = "/dcinside/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter crawlDcinsideStream(@RequestBody CrawlRequest request) {
-        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+        SseEmitter emitter = new SseEmitter(-1L); // 타임아웃 없음
 
         if (request.urls() == null || request.urls().isEmpty()) {
             sendErrorAndComplete(emitter, "URL을 입력해 주세요.");
