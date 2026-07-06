@@ -20,11 +20,11 @@ const COLUMNS = [
   { header: '게시일자', key: 'postDate', width: 22 },
   { header: '갤러리명', key: 'galleryName', width: 18 },
   { header: '닉네임', key: 'nickname', width: 18 },
-  { header: 'URL', key: 'url', width: 50 },
   { header: '게시글 제목', key: 'title', width: 40 },
   { header: '내용', key: 'content', width: 80 },
   { header: '댓글 작성자·내용·일시', key: 'commentSection', width: 60 },
   { header: '비고', key: 'remarks', width: 40 },
+  { header: 'URL', key: 'url', width: 50 },
   { header: '연번표시 캡처파일 (캡처파일 디렉토리)', key: 'captureFile', width: 45 },
   { header: '캡처 썸네일', key: 'captureThumbnail', width: 48 },
   { header: '죄명', key: 'crimeType', width: 20 },
@@ -32,7 +32,7 @@ const COLUMNS = [
 
 const CAPTURE_COLUMN = 10;
 const THUMBNAIL_COLUMN = 11;
-const URL_COLUMN = 5;
+const URL_COLUMN = 9;
 
 const HEADER_FILL = {
   type: 'pattern' as const,
@@ -104,38 +104,62 @@ function rowHeightToPixels(rowHeightPt: number): number {
   return Math.max(1, Math.floor((rowHeightPt * 96) / 72));
 }
 
-/** 원본 크기(1:1)로 셀 좌상단에 배치하고, 셀 경계를 벗어나는 부분은 잘라냅니다. */
-function cropThumbnailToPngBase64(
-  base64: string,
-  cellWidthPx: number,
-  cellHeightPx: number
-): Promise<{ base64: string; width: number; height: number }> {
+function loadImageFromBase64(base64: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();
-    image.onload = () => {
-      const canvas = document.createElement('canvas');
-      canvas.width = cellWidthPx;
-      canvas.height = cellHeightPx;
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        reject(new Error('캔버스를 사용할 수 없습니다.'));
-        return;
-      }
-      ctx.fillStyle = '#FFFFFF';
-      ctx.fillRect(0, 0, cellWidthPx, cellHeightPx);
-      ctx.drawImage(image, 0, 0);
-
-      const dataUrl = canvas.toDataURL('image/png');
-      const commaIndex = dataUrl.indexOf(',');
-      resolve({
-        base64: commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl,
-        width: cellWidthPx,
-        height: cellHeightPx,
-      });
-    };
+    image.onload = () => resolve(image);
     image.onerror = () => reject(new Error('캡처 이미지를 읽을 수 없습니다.'));
     image.src = `data:image/png;base64,${base64}`;
   });
+}
+
+/** 썸네일 열 너비에 맞춰 전체 이미지가 보이도록 행 높이(pt)를 계산합니다. */
+function rowHeightForContainedImage(
+  imageWidth: number,
+  imageHeight: number,
+  columnWidth: number
+): number {
+  if (imageWidth <= 0 || imageHeight <= 0) {
+    return MIN_ROW_HEIGHT;
+  }
+  const cellWidthPx = columnWidthToPixels(columnWidth);
+  const scale = cellWidthPx / imageWidth;
+  const scaledHeightPx = imageHeight * scale;
+  const heightPt = (scaledHeightPx * 72) / 96 + ROW_PADDING_PT;
+  return Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, heightPt));
+}
+
+/** 셀 크기에 맞게 비율을 유지하며 전체 이미지를 축소·배치합니다. */
+function fitThumbnailToPngBase64(
+  image: HTMLImageElement,
+  cellWidthPx: number,
+  cellHeightPx: number
+): { base64: string; width: number; height: number } {
+  const canvas = document.createElement('canvas');
+  canvas.width = cellWidthPx;
+  canvas.height = cellHeightPx;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    throw new Error('캔버스를 사용할 수 없습니다.');
+  }
+
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(0, 0, cellWidthPx, cellHeightPx);
+
+  const scale = Math.min(cellWidthPx / image.width, cellHeightPx / image.height);
+  const drawWidth = image.width * scale;
+  const drawHeight = image.height * scale;
+  const offsetX = (cellWidthPx - drawWidth) / 2;
+  const offsetY = (cellHeightPx - drawHeight) / 2;
+  ctx.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+
+  const dataUrl = canvas.toDataURL('image/png');
+  const commaIndex = dataUrl.indexOf(',');
+  return {
+    base64: commaIndex >= 0 ? dataUrl.slice(commaIndex + 1) : dataUrl,
+    width: cellWidthPx,
+    height: cellHeightPx,
+  };
 }
 
 export async function exportCrimeListExcel(
@@ -189,18 +213,31 @@ export async function exportCrimeListExcel(
       sanitizeExcelText(post.postDate),
       sanitizeExcelText(post.galleryName ?? ''),
       sanitizeExcelText(post.nickname),
-      sanitizeExcelText(post.url),
       sanitizeExcelText(post.title),
       sanitizeExcelText(bodySection),
       sanitizeExcelText(commentSection),
       sanitizeExcelText(post.remarks),
+      sanitizeExcelText(post.url),
       sanitizeExcelText(post.captureFilePath),
       '',
       sanitizeExcelText(post.crimeType || ''),
     ];
 
     const row = sheet.getRow(index + 3);
-    const rowHeight = calculateRowHeight(rowValues);
+    let rowHeight = calculateRowHeight(rowValues);
+    let captureImage: HTMLImageElement | null = null;
+
+    if (post.captureImageBase64) {
+      captureImage = await loadImageFromBase64(post.captureImageBase64);
+      const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
+      const thumbnailRowHeight = rowHeightForContainedImage(
+        captureImage.width,
+        captureImage.height,
+        thumbnailColumnWidth
+      );
+      rowHeight = Math.max(rowHeight, thumbnailRowHeight);
+    }
+
     row.values = rowValues;
     row.height = rowHeight;
     row.eachCell((cell) => {
@@ -233,15 +270,11 @@ export async function exportCrimeListExcel(
       captureCell.font = { color: { argb: 'FF0563C1' }, underline: true };
     }
 
-    if (post.captureImageBase64) {
+    if (captureImage) {
       const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
       const cellWidthPx = columnWidthToPixels(thumbnailColumnWidth);
       const cellHeightPx = rowHeightToPixels(rowHeight);
-      const thumbnail = await cropThumbnailToPngBase64(
-        post.captureImageBase64,
-        cellWidthPx,
-        cellHeightPx
-      );
+      const thumbnail = fitThumbnailToPngBase64(captureImage, cellWidthPx, cellHeightPx);
       const imageId = workbook.addImage({
         base64: thumbnail.base64,
         extension: 'png',
