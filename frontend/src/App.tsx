@@ -2,6 +2,15 @@ import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
 import { crawlDcinside, searchDcinside } from './api';
 import { saveCapturesToDirectory } from './captureFiles';
+import {
+  aggregateStepTimings,
+  appendCrawlLogEntry,
+  formatExecutedAt,
+  formatFailureReasons,
+  getOrCreateLogDirectory,
+  pickFirstStepMs,
+  pickStepMs,
+} from './crawlLogExport';
 import { exportCrimeListExcel } from './excelExport';
 import { getOrCreateSubdirectory } from './localFileStorage';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './nativeFolderPicker';
@@ -11,7 +20,7 @@ import {
   getCaptureFilename,
   toCaptureRelativePath,
 } from './pathUtils';
-import type { DcinsidePostData } from './types';
+import type { CrawlLogEntry, DcinsidePostData, UrlTiming } from './types';
 import './App.css';
 
 function deriveCommunityName(posts: DcinsidePostData[]): string {
@@ -71,6 +80,55 @@ interface CrawlProgress {
   currentUrl: string;
   successCount: number;
   failCount: number;
+}
+
+interface CrawlLogContext {
+  keyword?: string;
+  inputMode: CrawlLogEntry['inputMode'];
+  searchMs?: number;
+}
+
+async function saveCrawlLog(
+  directory: FileSystemDirectoryHandle | null,
+  context: CrawlLogContext,
+  attemptedCount: number,
+  successCount: number,
+  errors: { url: string; error: string }[],
+  totalMs: number,
+  timings: UrlTiming[]
+): Promise<void> {
+  if (!directory) {
+    return;
+  }
+
+  const stepDetails = aggregateStepTimings(timings);
+  const entry: CrawlLogEntry = {
+    executedAt: formatExecutedAt(),
+    keyword: context.keyword,
+    inputMode: context.inputMode,
+    attemptedCount,
+    successCount,
+    failCount: Math.max(attemptedCount - successCount, errors.length),
+    failureReasons: formatFailureReasons(errors),
+    totalMs,
+    searchMs: context.searchMs,
+    textCrawlMs:
+      pickFirstStepMs(stepDetails, 'text-crawl') ??
+      pickStepMs(stepDetails, 'fetch-page', 'parse-html', 'fetch-comments', 'build-result'),
+    seleniumBootMs: pickStepMs(stepDetails, 'create-driver'),
+    pageNavigateMs: pickStepMs(stepDetails, 'page-navigate'),
+    waitContentMs: pickStepMs(stepDetails, 'wait-gallview-head'),
+    waitCommentsMs: pickStepMs(stepDetails, 'wait-comments'),
+    captureImagesMs: pickStepMs(stepDetails, 'capture-images'),
+    screenshotMs: pickFirstStepMs(stepDetails, 'screenshot'),
+    stepDetails,
+  };
+
+  try {
+    await appendCrawlLogEntry(directory, entry);
+  } catch (e) {
+    console.error('크롤링 로그 저장 실패:', e);
+  }
 }
 
 export default function App() {
@@ -140,7 +198,10 @@ export default function App() {
     }
 
     lastSearchKeywordRef.current = undefined;
-    await runCrawlForUrls(urls, { clearUrlInput: true });
+    await runCrawlForUrls(urls, {
+      clearUrlInput: true,
+      logContext: { inputMode: 'URL 직접입력' },
+    });
   };
 
   const handleSearchCrawl = async () => {
@@ -166,19 +227,49 @@ export default function App() {
       failCount: 0,
     });
 
+    const logContext: CrawlLogContext = {
+      keyword: query,
+      inputMode: '검색어',
+    };
+
     try {
       lastSearchKeywordRef.current = query;
       const searchResult = await searchDcinside(query, 100);
+      logContext.searchMs = searchResult.searchMs;
+
       if (searchResult.urls.length === 0) {
         setError('검색 결과가 없습니다.');
+        await saveCrawlLog(
+          saveDirectoryRef.current,
+          logContext,
+          0,
+          0,
+          [],
+          Date.now() - (crawlStartAtRef.current ?? Date.now()),
+          []
+        );
         setLoading(false);
         setProgress(null);
         return;
       }
 
-      await runCrawlForUrls(searchResult.urls, { clearSearchInput: true, skipInit: true });
+      await runCrawlForUrls(searchResult.urls, {
+        clearSearchInput: true,
+        skipInit: true,
+        logContext,
+      });
     } catch (e) {
-      setError(resolveCrawlError(e));
+      const message = resolveCrawlError(e);
+      setError(message);
+      await saveCrawlLog(
+        saveDirectoryRef.current,
+        logContext,
+        0,
+        0,
+        [{ url: '(검색)', error: message }],
+        Date.now() - (crawlStartAtRef.current ?? Date.now()),
+        []
+      );
       if (crawlStartAtRef.current !== null) {
         setLastCrawlDurationMs(Date.now() - crawlStartAtRef.current);
       }
@@ -189,7 +280,12 @@ export default function App() {
 
   const runCrawlForUrls = async (
     urls: string[],
-    options?: { clearUrlInput?: boolean; clearSearchInput?: boolean; skipInit?: boolean }
+    options?: {
+      clearUrlInput?: boolean;
+      clearSearchInput?: boolean;
+      skipInit?: boolean;
+      logContext?: CrawlLogContext;
+    }
   ) => {
     if (!options?.skipInit) {
       crawlStartAtRef.current = Date.now();
@@ -200,7 +296,11 @@ export default function App() {
     }
 
     const batchErrors: { url: string; error: string }[] = [];
+    const batchTimings: UrlTiming[] = [];
     let successCount = 0;
+    const logContext: CrawlLogContext = options?.logContext ?? {
+      inputMode: 'URL 직접입력',
+    };
 
     setProgress({
       completed: 0,
@@ -229,6 +329,9 @@ export default function App() {
             setSavedResults((prev) => mergeSavedResults(prev, response.data));
           }
           batchErrors.push(...response.errors);
+          if (response.timings) {
+            batchTimings.push(...response.timings);
+          }
         } catch (e) {
           const message = resolveCrawlError(e);
           batchErrors.push({ url, error: message });
@@ -248,9 +351,20 @@ export default function App() {
         setError('이번 요청의 모든 URL 처리에 실패했습니다.');
       }
     } finally {
+      const totalMs =
+        crawlStartAtRef.current !== null ? Date.now() - crawlStartAtRef.current : 0;
       if (crawlStartAtRef.current !== null) {
-        setLastCrawlDurationMs(Date.now() - crawlStartAtRef.current);
+        setLastCrawlDurationMs(totalMs);
       }
+      await saveCrawlLog(
+        saveDirectoryRef.current,
+        logContext,
+        urls.length,
+        successCount,
+        batchErrors,
+        totalMs,
+        batchTimings
+      );
       setLoading(false);
       setProgress(null);
       if (options?.clearUrlInput) {
@@ -293,6 +407,7 @@ export default function App() {
     }
     setSaving(true);
     try {
+      await getOrCreateLogDirectory(saveDirectoryRef.current);
       const stamp = formatTimestamp();
       const resultDir = await getOrCreateSubdirectory(
         saveDirectoryRef.current,

@@ -3,6 +3,8 @@ package com.evidence.service;
 import com.evidence.dto.CaptureImage;
 import com.evidence.dto.CommentData;
 import com.evidence.dto.DcinsidePostData;
+import com.evidence.dto.TimedResult;
+import com.evidence.util.StepTimer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jsoup.Jsoup;
@@ -49,17 +51,25 @@ public class DcinsideCrawlService {
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // 디시인사이드 게시글 크롤링
-    public DcinsidePostData crawl(String url) throws Exception {
+    public TimedResult<DcinsidePostData> crawl(String url) throws Exception {
         if (!DC_URL_PATTERN.matcher(url).find() && !url.contains("gall.dcinside.com")) {
             throw new IllegalArgumentException("디시인사이드 게시글 URL이 아닙니다.");
         }
 
         // 게시글 URL 정규화
         String normalizedUrl = normalizeUrl(url);
-        
+        StepTimer timer = new StepTimer(log, "text-crawl " + normalizedUrl);
+        try {
+            return new TimedResult<>(crawlInternal(normalizedUrl, timer), timer.finish());
+        } catch (Exception e) {
+            throw new StageTimedException("text-crawl", e, timer.finish());
+        }
+    }
+
+    private DcinsidePostData crawlInternal(String normalizedUrl, StepTimer timer) throws Exception {
         // 쿠키 관리자
         CookieManager cookieManager = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
-        
+
         // HTTP 클라이언트
         HttpClient client = HttpClient.newBuilder()
                 .cookieHandler(cookieManager)
@@ -68,7 +78,8 @@ public class DcinsideCrawlService {
 
         // 페이지 파싱
         HttpResponse<String> pageResponse = fetchPage(client, normalizedUrl);
-        
+        timer.step("fetch-page");
+
         // 문서 파싱
         Document doc = Jsoup.parse(pageResponse.body(), normalizedUrl);
         
@@ -112,9 +123,11 @@ public class DcinsideCrawlService {
         }
         int commentCountFromLd = extractInteractionCount(jsonLd, "CommentAction");
         int commentCountFromHtml = extractCommentCountFromHtml(doc, postNo);
+        timer.step("parse-html");
 
         // 댓글 추출
         List<CommentData> comments = fetchAllComments(client, normalizedUrl, galleryId, postNo, esno, galleryType);
+        timer.step("fetch-comments (" + comments.size() + " comments)");
         int realCommentCount = countRealComments(comments);
         int commentCount = comments.isEmpty()
                 ? (commentCountFromLd > 0 ? commentCountFromLd : commentCountFromHtml)
@@ -124,6 +137,7 @@ public class DcinsideCrawlService {
         String nickname = formatDisplayNickname(writer.nick(), writer.ip(), writer.uid());
         String galleryName = extractGalleryName(doc);
         String content = buildContent(title, body, comments);
+        timer.step("build-result");
 
         // 게시글 데이터 반환
         return new DcinsidePostData(
@@ -496,8 +510,10 @@ public class DcinsideCrawlService {
         List<CommentData> all = new ArrayList<>();
         int page = 1;
         int totalCnt = Integer.MAX_VALUE;
+        int apiCalls = 0;
 
         while (all.size() < totalCnt && page <= 50) {
+            apiCalls++;
             JsonNode data = fetchCommentPage(client, referer, galleryId, postNo, esno, galleryType, page);
             totalCnt = data.path("total_cnt").asInt(0);
             JsonNode comments = data.get("comments");
@@ -529,6 +545,9 @@ public class DcinsideCrawlService {
                 break;
             }
             page++;
+        }
+        if (apiCalls > 0) {
+            log.info("[timing] fetch-comments-api | {} API calls, {} comments", apiCalls, all.size());
         }
         return all;
     }

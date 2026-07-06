@@ -30,11 +30,14 @@ public class SearchController {
 
     @PostMapping("/dcinside")
     public ResponseEntity<?> searchDcinside(@RequestBody SearchRequest request) {
+        long searchStartNanos = System.nanoTime();
         try {
             List<String> urls = searchService.searchIntegrated(request.query(), request.maxResults());
+            long searchMs = (System.nanoTime() - searchStartNanos) / 1_000_000;
             Map<String, Object> body = new LinkedHashMap<>();
             body.put("urls", urls);
             body.put("count", urls.size());
+            body.put("searchMs", searchMs);
             return ResponseEntity.ok(body);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));

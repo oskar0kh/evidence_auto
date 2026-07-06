@@ -26,10 +26,39 @@ export interface DcinsidePostData {
 
 export interface CrawlResponse {
   data: DcinsidePostData[];
-  errors: { url: string; error: string }[];
+  errors: { url: string; error: string; stage?: string }[];
+  timings?: UrlTiming[];
+}
+
+export interface UrlTiming {
+  url: string;
+  success: boolean;
+  totalMs: number;
+  steps: Record<string, number>;
 }
 
 export interface SearchResponse {
   urls: string[];
   count: number;
+  searchMs?: number;
+}
+
+export interface CrawlLogEntry {
+  executedAt: string;
+  keyword?: string;
+  inputMode: '검색어' | 'URL 직접입력';
+  attemptedCount: number;
+  successCount: number;
+  failCount: number;
+  failureReasons: string;
+  totalMs: number;
+  searchMs?: number;
+  textCrawlMs?: number;
+  seleniumBootMs?: number;
+  pageNavigateMs?: number;
+  waitContentMs?: number;
+  waitCommentsMs?: number;
+  captureImagesMs?: number;
+  screenshotMs?: number;
+  stepDetails: Record<string, number>;
 }

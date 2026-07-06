@@ -34,3 +34,17 @@ export async function writeArrayBufferToDirectory(
 ): Promise<void> {
   await writeBlobToDirectory(handle, filename, new Blob([buffer]));
 }
+
+export async function tryReadFileFromDirectory(
+  handle: FileSystemDirectoryHandle,
+  filename: string
+): Promise<ArrayBuffer | null> {
+  try {
+    await assertWritableDirectory(handle);
+    const fileHandle = await handle.getFileHandle(filename);
+    const file = await fileHandle.getFile();
+    return await file.arrayBuffer();
+  } catch {
+    return null;
+  }
+}

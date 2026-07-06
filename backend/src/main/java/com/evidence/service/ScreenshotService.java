@@ -1,6 +1,9 @@
 package com.evidence.service;
 
 import com.evidence.dto.CaptureImage;
+import com.evidence.dto.TimedResult;
+import com.evidence.util.StepTimer;
+import com.evidence.util.StepTimings;
 import io.github.bonigarcia.wdm.WebDriverManager;
 import jakarta.annotation.PostConstruct;
 import org.openqa.selenium.By;
@@ -95,20 +98,28 @@ public class ScreenshotService {
     }
 
     // 스크린샷 캡처 (게시글~댓글 영역)
-    public CaptureImage captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
+    public TimedResult<CaptureImage> captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
         String filename = formatFilename(excelRowNumber, postNo);
         Path tempFile = Files.createTempFile("evidence-capture-", ".png");
 
         synchronized (captureLock) {
             Exception lastError = null;
+            StepTimings lastTimings = null;
             try {
                 for (int attempt = 1; attempt <= MAX_CAPTURE_ATTEMPTS; attempt++) {
+                    String scope = attempt == 1
+                            ? "screenshot " + url
+                            : "screenshot " + url + " attempt=" + attempt;
+                    StepTimer timer = new StepTimer(log, scope);
                     try {
-                        captureOnce(url, postNo, tempFile);
+                        captureOnce(url, postNo, tempFile, timer);
                         byte[] pngBytes = Files.readAllBytes(tempFile);
-                        return new CaptureImage(filename, pngBytes);
+                        timer.step("read-temp-file (" + pngBytes.length + " bytes)");
+                        StepTimings timings = timer.finish();
+                        return new TimedResult<>(new CaptureImage(filename, pngBytes), timings);
                     } catch (Exception e) {
                         lastError = e;
+                        lastTimings = timer.finish();
                         log.warn("Screenshot attempt {}/{} failed for {}: {}", attempt, MAX_CAPTURE_ATTEMPTS, url, e.getMessage());
                         if (attempt < MAX_CAPTURE_ATTEMPTS) {
                             TimeUnit.SECONDS.sleep(1);
@@ -116,12 +127,16 @@ public class ScreenshotService {
                     }
                 }
 
-                throw new IllegalStateException(
-                        "스크린샷 캡처 실패: " + (lastError != null && lastError.getMessage() != null
-                                ? lastError.getMessage()
-                                : "알 수 없는 오류")
-                                + " (Chrome: " + chromeBinary + ")",
-                        lastError
+                throw new StageTimedException(
+                        "screenshot",
+                        new IllegalStateException(
+                                "스크린샷 캡처 실패: " + (lastError != null && lastError.getMessage() != null
+                                        ? lastError.getMessage()
+                                        : "알 수 없는 오류")
+                                        + " (Chrome: " + chromeBinary + ")",
+                                lastError
+                        ),
+                        lastTimings
                 );
             } finally {
                 Files.deleteIfExists(tempFile);
@@ -130,31 +145,42 @@ public class ScreenshotService {
     }
 
     // 스크린샷 한 번 캡처
-    private void captureOnce(String url, String postNo, Path filePath) throws Exception {
-        
+    private void captureOnce(String url, String postNo, Path filePath, StepTimer timer) throws Exception {
+
         // 웹 드라이버 초기화
         WebDriver driver = null;
         try {
             ChromeDriver chromeDriver = createDriver(); // 웹 드라이버 생성
+            timer.step("create-driver");
             driver = chromeDriver;
             if (blockTracking) {
                 TrackingDomainBlocker.apply(chromeDriver); // 광고/트래킹 도메인 차단
+                timer.step("apply-tracking-blocker");
             }
             driver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(pageLoadTimeoutSeconds)); // 페이지 로드 타임아웃
             driver.manage().timeouts().scriptTimeout(Duration.ofSeconds(30)); // 스크립트 타임아웃
 
             driver.get(url); // 페이지 접속
+            timer.step("page-navigate");
 
             WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(contentWaitSeconds)); // 콘텐츠 대기
             wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("div.gallview_head")));
+            timer.step("wait-gallview-head");
+
             waitForCommentsIfNeeded(driver, postNo); // 댓글 대기
+            timer.step("wait-comments");
 
             // 캡처 대상 찾기
             WebElement captureTarget = findCaptureTarget(driver, wait);
+            timer.step("find-capture-target");
+
             byte[] pngBytes = captureWithCommentPages(chromeDriver, captureTarget, postNo);
+            timer.step("capture-images (" + pngBytes.length + " bytes)");
             Files.write(filePath, pngBytes);
+            timer.step("write-temp-file");
         } finally {
             quitDriver(driver); // 웹 드라이버 종료
+            timer.step("quit-driver");
         }
     }
 
@@ -286,13 +312,19 @@ public class ScreenshotService {
     // 본문 + 댓글 전체 페이지 캡처 (댓글 페이지네이션 포함, 열 단위 즉시 병합)
     private byte[] captureWithCommentPages(ChromeDriver driver, WebElement captureTarget, String postNo)
             throws InterruptedException, IOException {
+        StepTimer timer = new StepTimer(log, "capture-images post=" + postNo);
         List<Integer> commentPages = detectCommentPages(driver, postNo);
+        timer.step("detect-comment-pages (" + commentPages.size() + " pages)");
         if (!captureAllCommentPages || commentPages.size() <= 1) {
-            return captureRegionScreenshot(driver, captureTarget, postNo);
+            byte[] capture = captureRegionScreenshot(driver, captureTarget, postNo);
+            timer.step("capture-main-region (" + capture.length + " bytes)");
+            timer.done();
+            return capture;
         }
 
         List<byte[]> completedColumns = new ArrayList<>();
         byte[] currentColumn = captureRegionScreenshot(driver, captureTarget, postNo);
+        timer.step("capture-main-region (" + currentColumn.length + " bytes)");
         int capturedPageCount = 1;
 
         for (int page : commentPages) {
@@ -302,6 +334,7 @@ public class ScreenshotService {
             goToCommentPage(driver, postNo, page);
             waitForCommentPage(driver, postNo, page);
             byte[] pageCapture = captureCommentPageScreenshot(driver, postNo);
+            timer.step("comment-page-" + page + " (" + pageCapture.length + " bytes)");
             capturedPageCount++;
 
             int currentHeight = getImageHeight(currentColumn);
@@ -322,10 +355,16 @@ public class ScreenshotService {
                 capturedPageCount
         );
 
+        byte[] result;
         if (completedColumns.size() == 1) {
-            return completedColumns.get(0);
+            result = completedColumns.get(0);
+            timer.step("merge-images (single column)");
+        } else {
+            result = stitchHorizontally(completedColumns);
+            timer.step("merge-images (horizontal stitch, " + completedColumns.size() + " columns)");
         }
-        return stitchHorizontally(completedColumns);
+        timer.done();
+        return result;
     }
 
     @SuppressWarnings("unchecked")
