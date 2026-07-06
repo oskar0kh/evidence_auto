@@ -30,6 +30,15 @@ export interface CrawlResponse {
   timings?: UrlTiming[];
 }
 
+export interface CrawlProgressEvent {
+  completed: number;
+  total: number;
+  currentUrl: string;
+  stage: string;
+  successCount: number;
+  failCount: number;
+}
+
 export interface UrlTiming {
   url: string;
   success: boolean;

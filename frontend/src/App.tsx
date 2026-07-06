@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
-import { crawlDcinside, searchDcinside } from './api';
+import { crawlDcinsideStream, searchDcinside } from './api';
 import { saveCapturesToDirectory } from './captureFiles';
 import {
   aggregateStepTimings,
@@ -75,14 +75,27 @@ function formatDuration(ms: number): string {
   return `${minutes}분 ${seconds}초`;
 }
 
-const CRAWL_BATCH_SIZE = 100;
+const STAGE_LABELS: Record<string, string> = {
+  'text-crawl': '글·댓글 수집',
+  screenshot: '화면 캡처',
+  'attach-capture': '결과 저장',
+  'url-done': '완료',
+  'url-failed': '실패',
+};
 
-function chunkUrls(urls: string[], size: number): string[][] {
-  const batches: string[][] = [];
-  for (let i = 0; i < urls.length; i += size) {
-    batches.push(urls.slice(i, i + size));
+const STAGE_WEIGHTS: Record<string, number> = {
+  'text-crawl': 0.15,
+  screenshot: 0.55,
+  'attach-capture': 0.85,
+  'url-done': 1,
+  'url-failed': 1,
+};
+
+function formatStageLabel(stage?: string): string {
+  if (!stage) {
+    return '처리 중';
   }
-  return batches;
+  return STAGE_LABELS[stage] ?? stage;
 }
 
 function hasPartialDateRange(startDate: string, endDate: string): boolean {
@@ -100,6 +113,7 @@ interface CrawlProgress {
   completed: number;
   total: number;
   currentUrl: string;
+  stage?: string;
   successCount: number;
   failCount: number;
 }
@@ -345,57 +359,42 @@ export default function App() {
     setProgress({
       completed: 0,
       total: urls.length,
-      currentUrl: urls[0],
+      currentUrl: urls[0] ?? '',
+      stage: 'text-crawl',
       successCount: 0,
       failCount: 0,
     });
 
     try {
-      const batches = chunkUrls(urls, CRAWL_BATCH_SIZE);
-      let processedCount = 0;
-
-      for (const batch of batches) {
-        const batchStartIndex = processedCount;
+      const startSerial = savedResults.length + 1;
+      const response = await crawlDcinsideStream(urls, startSerial, (event) => {
         setProgress({
-          completed: batchStartIndex,
-          total: urls.length,
-          currentUrl: batch[0],
-          successCount,
-          failCount: batchErrors.length,
+          completed: event.completed,
+          total: event.total,
+          currentUrl: event.currentUrl,
+          stage: event.stage,
+          successCount: event.successCount,
+          failCount: event.failCount,
         });
+      });
 
-        try {
-          const startSerial = savedResults.length + successCount + 1;
-          const response = await crawlDcinside(batch, startSerial);
-          if (response.data.length > 0) {
-            successCount += response.data.length;
-            setSavedResults((prev) => mergeSavedResults(prev, response.data));
-          }
-          batchErrors.push(...response.errors);
-          if (response.timings) {
-            batchTimings.push(...response.timings);
-          }
-        } catch (e) {
-          const message = resolveCrawlError(e);
-          for (const url of batch) {
-            batchErrors.push({ url, error: message });
-          }
-        }
-
-        processedCount += batch.length;
-        setProgress({
-          completed: processedCount,
-          total: urls.length,
-          currentUrl: batch[batch.length - 1],
-          successCount,
-          failCount: batchErrors.length,
-        });
+      if (response.data.length > 0) {
+        successCount = response.data.length;
+        setSavedResults((prev) => mergeSavedResults(prev, response.data));
+      }
+      batchErrors.push(...response.errors);
+      if (response.timings) {
+        batchTimings.push(...response.timings);
       }
 
       setErrors(batchErrors);
       if (successCount === 0 && batchErrors.length > 0) {
         setError('이번 요청의 모든 URL 처리에 실패했습니다.');
       }
+    } catch (e) {
+      const message = resolveCrawlError(e);
+      setError(message);
+      batchErrors.push({ url: '(크롤링)', error: message });
     } finally {
       const totalMs =
         crawlStartAtRef.current !== null ? Date.now() - crawlStartAtRef.current : 0;
@@ -439,7 +438,10 @@ export default function App() {
       ? Math.min(
           100,
           Math.round(
-            ((progress.completed + (loading && progress.completed < progress.total ? 0.35 : 0)) /
+            ((progress.completed +
+              (loading && progress.completed < progress.total
+                ? STAGE_WEIGHTS[progress.stage ?? 'text-crawl'] ?? 0.15
+                : 0)) /
               progress.total) *
               100
           )
@@ -609,9 +611,15 @@ export default function App() {
                 />
               </div>
               <p className="progress-url">
-                {progress.completed < progress.total
-                  ? `처리 중: ${shortenUrl(progress.currentUrl)}`
-                  : '완료'}
+                {progress.completed < progress.total ? (
+                  <>
+                    <span className="progress-stage">{formatStageLabel(progress.stage)}</span>
+                    {' · '}
+                    {shortenUrl(progress.currentUrl)}
+                  </>
+                ) : (
+                  '완료'
+                )}
               </p>
             </div>
           )}

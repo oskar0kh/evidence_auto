@@ -1,6 +1,7 @@
 package com.evidence.controller;
 
 import com.evidence.dto.CaptureImage;
+import com.evidence.dto.CrawlProgressEvent;
 import com.evidence.dto.CrawlRequest;
 import com.evidence.dto.DcinsidePostData;
 import com.evidence.dto.TimedResult;
@@ -12,29 +13,38 @@ import com.evidence.util.StepTimer;
 import com.evidence.util.StepTimings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CompletableFuture;
+import java.util.function.Consumer;
 
 @RestController
 @RequestMapping("/api/crawl")
 public class CrawlController {
 
     private static final Logger log = LoggerFactory.getLogger(CrawlController.class);
+    private static final long SSE_TIMEOUT_MS = 3_600_000L;
 
     private final DcinsideCrawlService crawlService;
     private final ScreenshotService screenshotService;
 
-    public CrawlController(DcinsideCrawlService crawlService, ScreenshotService screenshotService) {
+    public CrawlController(
+            DcinsideCrawlService crawlService,
+            ScreenshotService screenshotService
+    ) {
         this.crawlService = crawlService;
         this.screenshotService = screenshotService;
     }
@@ -45,15 +55,58 @@ public class CrawlController {
             return ResponseEntity.badRequest().body(Map.of("error", "URL을 입력해 주세요."));
         }
 
+        CrawlResult result = crawlAllUrls(request, event -> { });
+        return ResponseEntity.ok(result.toBody());
+    }
+
+    @PostMapping(value = "/dcinside/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter crawlDcinsideStream(@RequestBody CrawlRequest request) {
+        SseEmitter emitter = new SseEmitter(SSE_TIMEOUT_MS);
+
+        if (request.urls() == null || request.urls().isEmpty()) {
+            sendErrorAndComplete(emitter, "URL을 입력해 주세요.");
+            return emitter;
+        }
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                CrawlResult result = crawlAllUrls(request, event -> sendEvent(emitter, "progress", event));
+                sendEvent(emitter, "complete", result.toBody());
+                emitter.complete();
+            } catch (Exception e) {
+                log.error("SSE crawl stream failed", e);
+                sendErrorAndComplete(
+                        emitter,
+                        e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
+                );
+            }
+        });
+
+        emitter.onTimeout(() -> log.warn("SSE crawl stream timed out"));
+        emitter.onError(error -> log.warn("SSE crawl stream error: {}", error.getMessage()));
+
+        return emitter;
+    }
+
+    private CrawlResult crawlAllUrls(CrawlRequest request, Consumer<CrawlProgressEvent> onProgress) {
+        List<String> validUrls = request.urls().stream()
+                .map(url -> url == null ? "" : url.trim())
+                .filter(url -> !url.isEmpty())
+                .toList();
+
         List<DcinsidePostData> results = new ArrayList<>();
         List<Map<String, String>> errors = new ArrayList<>();
         List<UrlTiming> timings = new ArrayList<>();
 
-        for (String url : request.urls()) {
-            String trimmed = url == null ? "" : url.trim();
-            if (trimmed.isEmpty()) {
-                continue;
-            }
+        int total = validUrls.size();
+        int completed = 0;
+        int successCount = 0;
+        int failCount = 0;
+
+        for (String trimmed : validUrls) {
+            onProgress.accept(new CrawlProgressEvent(
+                    completed, total, trimmed, "text-crawl", successCount, failCount
+            ));
 
             StepTimer timer = new StepTimer(log, "crawl-url " + trimmed);
             List<StepTimings> partialTimings = new ArrayList<>();
@@ -62,6 +115,10 @@ public class CrawlController {
                 TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed);
                 partialTimings.add(crawled.timings());
                 timer.step("text-crawl");
+
+                onProgress.accept(new CrawlProgressEvent(
+                        completed, total, trimmed, "screenshot", successCount, failCount
+                ));
 
                 int excelRowNumber = request.startSerial() != null
                         ? request.startSerial() + results.size()
@@ -72,6 +129,10 @@ public class CrawlController {
                 partialTimings.add(capture.timings());
                 timer.step("screenshot");
 
+                onProgress.accept(new CrawlProgressEvent(
+                        completed, total, trimmed, "attach-capture", successCount, failCount
+                ));
+
                 results.add(crawlService.attachCapture(crawled.value(), capture.value()));
                 timer.step("attach-capture");
 
@@ -80,23 +141,54 @@ public class CrawlController {
                 );
                 StepTimings withOuter = mergeWithOuter(timer.finish(), merged);
                 timings.add(new UrlTiming(trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()));
+
+                successCount++;
+                completed++;
+                onProgress.accept(new CrawlProgressEvent(
+                        completed, total, trimmed, "url-done", successCount, failCount
+                ));
             } catch (StageTimedException e) {
                 partialTimings.add(e.timings());
                 log.warn("Crawl failed for {} at {}: {}", trimmed, e.stage(), e.getMessage());
                 errors.add(errorEntry(trimmed, e));
                 timings.add(buildFailedTiming(trimmed, partialTimings, timer));
+                failCount++;
+                completed++;
+                onProgress.accept(new CrawlProgressEvent(
+                        completed, total, trimmed, "url-failed", successCount, failCount
+                ));
             } catch (Exception e) {
                 log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
                 errors.add(errorEntry(trimmed, e));
                 timings.add(buildFailedTiming(trimmed, partialTimings, timer));
+                failCount++;
+                completed++;
+                onProgress.accept(new CrawlProgressEvent(
+                        completed, total, trimmed, "url-failed", successCount, failCount
+                ));
             }
         }
 
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("data", results);
-        body.put("errors", errors);
-        body.put("timings", timings);
-        return ResponseEntity.ok(body);
+        return new CrawlResult(results, errors, timings);
+    }
+
+    private void sendEvent(SseEmitter emitter, String eventName, Object payload) {
+        try {
+            emitter.send(SseEmitter.event().name(eventName).data(payload, MediaType.APPLICATION_JSON));
+        } catch (IOException e) {
+            throw new IllegalStateException("SSE send failed for event " + eventName, e);
+        }
+    }
+
+    private void sendErrorAndComplete(SseEmitter emitter, String message) {
+        try {
+            emitter.send(SseEmitter.event()
+                    .name("error")
+                    .data(Map.of("error", message), MediaType.APPLICATION_JSON));
+            emitter.complete();
+        } catch (IOException e) {
+            emitter.completeWithError(e);
+        }
     }
 
     @ExceptionHandler(Exception.class)
@@ -127,5 +219,19 @@ public class CrawlController {
             entry.put("stage", stageTimed.stage());
         }
         return entry;
+    }
+
+    private record CrawlResult(
+            List<DcinsidePostData> results,
+            List<Map<String, String>> errors,
+            List<UrlTiming> timings
+    ) {
+        Map<String, Object> toBody() {
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("data", results);
+            body.put("errors", errors);
+            body.put("timings", timings);
+            return body;
+        }
     }
 }
