@@ -28,7 +28,7 @@ public class DcinsideSearchService {
     private static final int MAX_PAGE_LIMIT = 10;
 
     private static final Pattern POST_URL_PATTERN = Pattern.compile(
-            "https?://(?:m\\.)?gall\\.dcinside\\.com/(?:mgallery|mini|board)/board/view/\\?.*"
+            "https?://(?:m\\.)?gall\\.dcinside\\.com/(?:mgallery/board|mini/board|board)/view/\\?.*"
     );
 
     public List<String> searchIntegrated(String query, Integer maxResults) throws Exception {
@@ -48,21 +48,18 @@ public class DcinsideSearchService {
         for (int page = 1; page <= MAX_PAGE_LIMIT && collected.size() < limit; page++) {
             String searchUrl = "https://search.dcinside.com/post/p/" + page + "/q/" + encodedQuery;
             Document doc = fetchDocument(client, searchUrl);
-            List<String> pageUrls = extractPostUrls(doc);
-
-            if (pageUrls.isEmpty()) {
+            Elements resultLinks = doc.select("ul.sch_result_list a.tit_txt");
+            if (resultLinks.isEmpty()) {
                 break;
             }
+
+            List<String> pageUrls = extractPostUrls(resultLinks);
 
             for (String url : pageUrls) {
                 collected.add(url);
                 if (collected.size() >= limit) {
                     break;
                 }
-            }
-
-            if (pageUrls.size() < 20) {
-                break;
             }
 
             if (page < MAX_PAGE_LIMIT && collected.size() < limit) {
@@ -89,8 +86,7 @@ public class DcinsideSearchService {
         return Jsoup.parse(response.body(), url);
     }
 
-    private List<String> extractPostUrls(Document doc) {
-        Elements links = doc.select("ul.sch_result_list a.tit_txt");
+    private List<String> extractPostUrls(Elements links) {
         List<String> urls = new ArrayList<>();
         for (Element link : links) {
             String href = link.attr("href").trim();

@@ -7,6 +7,14 @@ async function assertWritableDirectory(handle: FileSystemDirectoryHandle): Promi
   }
 }
 
+export async function getOrCreateSubdirectory(
+  parent: FileSystemDirectoryHandle,
+  name: string
+): Promise<FileSystemDirectoryHandle> {
+  await assertWritableDirectory(parent);
+  return parent.getDirectoryHandle(name, { create: true });
+}
+
 export async function writeBlobToDirectory(
   handle: FileSystemDirectoryHandle,
   filename: string,

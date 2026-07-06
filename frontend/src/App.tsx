@@ -3,10 +3,27 @@ import { useEffect, useRef, useState } from 'react';
 import { crawlDcinside, searchDcinside } from './api';
 import { saveCapturesToDirectory } from './captureFiles';
 import { exportCrimeListExcel } from './excelExport';
+import { getOrCreateSubdirectory } from './localFileStorage';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './nativeFolderPicker';
-import { getCaptureFilename } from './pathUtils';
+import {
+  buildResultFolderName,
+  formatTimestamp,
+  getCaptureFilename,
+  toCaptureRelativePath,
+} from './pathUtils';
 import type { DcinsidePostData } from './types';
 import './App.css';
+
+function deriveCommunityName(posts: DcinsidePostData[]): string {
+  const galleryNames = posts
+    .map((post) => post.galleryName?.trim())
+    .filter((name): name is string => Boolean(name));
+  if (galleryNames.length === 0) {
+    return '디시인사이드';
+  }
+  const uniqueNames = [...new Set(galleryNames)];
+  return uniqueNames.length === 1 ? uniqueNames[0] : '디시인사이드';
+}
 
 function parseUrls(input: string): string[] {
   return input
@@ -70,6 +87,7 @@ export default function App() {
   const [elapsedMs, setElapsedMs] = useState(0);
   const [lastCrawlDurationMs, setLastCrawlDurationMs] = useState<number | null>(null);
   const crawlStartAtRef = useRef<number | null>(null);
+  const lastSearchKeywordRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (!loading) {
@@ -121,6 +139,7 @@ export default function App() {
       return;
     }
 
+    lastSearchKeywordRef.current = undefined;
     await runCrawlForUrls(urls, { clearUrlInput: true });
   };
 
@@ -148,6 +167,7 @@ export default function App() {
     });
 
     try {
+      lastSearchKeywordRef.current = query;
       const searchResult = await searchDcinside(query, 100);
       if (searchResult.urls.length === 0) {
         setError('검색 결과가 없습니다.');
@@ -273,12 +293,21 @@ export default function App() {
     }
     setSaving(true);
     try {
+      const stamp = formatTimestamp();
+      const resultDir = await getOrCreateSubdirectory(
+        saveDirectoryRef.current,
+        buildResultFolderName(stamp)
+      );
       const postsForExcel = savedResults.map((post) => ({
         ...post,
-        captureFilePath: getCaptureFilename(post.captureFilePath),
+        captureFilePath: toCaptureRelativePath(getCaptureFilename(post.captureFilePath)),
       }));
-      await saveCapturesToDirectory(saveDirectoryRef.current, savedResults);
-      await exportCrimeListExcel(postsForExcel, saveDirectoryRef.current);
+      await saveCapturesToDirectory(resultDir, savedResults);
+      await exportCrimeListExcel(postsForExcel, resultDir, {
+        communityName: deriveCommunityName(savedResults),
+        keyword: lastSearchKeywordRef.current,
+        stamp,
+      });
       setSavedResults(postsForExcel);
       setError(null);
       window.alert('저장이 완료됐습니다.');
@@ -344,8 +373,9 @@ export default function App() {
             </button>
           </div>
           <p className="field-hint">
-            폴더 선택으로 캡처·엑셀을 같은 위치에 저장합니다. 브라우저 보안상 Windows/Mac 전체 경로는
-            가져올 수 없으며, 엑셀의 캡처파일 링크는 같은 폴더의 이미지를 엽니다.
+            폴더 선택 후 저장하면 <code>결과물_YYYYMMDD_HHMM</code> 하위에 엑셀과{' '}
+            <code>Screenshot</code> 폴더(캡처 PNG)가 함께 생성됩니다. 엑셀의 캡처 링크는{' '}
+            <code>Screenshot</code> 하위 이미지를 가리킵니다.
           </p>
 
           <div className="button-row">

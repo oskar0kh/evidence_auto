@@ -1,8 +1,19 @@
 import ExcelJS from 'exceljs';
 import { extractBodySection, extractCommentsSection } from './commentSection';
 import { writeArrayBufferToDirectory } from './localFileStorage';
-import { getCaptureFilename, toSameFolderCaptureHyperlink } from './pathUtils';
+import {
+  buildExcelFilename,
+  extractSerialFromCaptureFilename,
+  getCaptureFilename,
+  toCaptureHyperlink,
+} from './pathUtils';
 import type { DcinsidePostData } from './types';
+
+export interface ExportCrimeListOptions {
+  communityName: string;
+  keyword?: string;
+  stamp: string;
+}
 
 const COLUMNS = [
   { header: '연번', key: 'serial', width: 8 },
@@ -129,7 +140,8 @@ function cropThumbnailToPngBase64(
 
 export async function exportCrimeListExcel(
   posts: DcinsidePostData[],
-  directory: FileSystemDirectoryHandle
+  directory: FileSystemDirectoryHandle,
+  options: ExportCrimeListOptions
 ): Promise<void> {
   const workbook = new ExcelJS.Workbook();
   workbook.creator = '범죄일람표 크롤러';
@@ -166,7 +178,9 @@ export async function exportCrimeListExcel(
 
   for (let index = 0; index < posts.length; index++) {
     const post = posts[index];
-    const serial = index + 1;
+    const captureFilename = getCaptureFilename(post.captureFilePath);
+    const serial =
+      extractSerialFromCaptureFilename(captureFilename) ?? index + 1;
     const commentSection = extractCommentsSection(post.content);
     const bodySection = extractBodySection(post.content);
 
@@ -209,13 +223,12 @@ export async function exportCrimeListExcel(
       urlCell.font = { color: { argb: 'FF0563C1' }, underline: true };
     }
 
-    const captureFilename = getCaptureFilename(post.captureFilePath);
     if (captureFilename) {
       const captureCell = row.getCell(CAPTURE_COLUMN);
-      const safeFilename = sanitizeExcelText(captureFilename);
+      const safeFilename = sanitizeExcelText(post.captureFilePath);
       captureCell.value = {
         text: safeFilename,
-        hyperlink: toSameFolderCaptureHyperlink(safeFilename),
+        hyperlink: toCaptureHyperlink(captureFilename),
       };
       captureCell.font = { color: { argb: 'FF0563C1' }, underline: true };
     }
@@ -243,9 +256,7 @@ export async function exportCrimeListExcel(
   }
 
   const buffer = await workbook.xlsx.writeBuffer();
-  const now = new Date();
-  const stamp = `${now.getFullYear()}${String(now.getMonth() + 1).padStart(2, '0')}${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}${String(now.getMinutes()).padStart(2, '0')}`;
-  const filename = `범죄일람표_${stamp}.xlsx`;
+  const filename = buildExcelFilename(options.communityName, options.keyword, options.stamp);
 
   await writeArrayBufferToDirectory(directory, filename, buffer as ArrayBuffer);
 }

@@ -42,7 +42,7 @@ public class DcinsideCrawlService {
 
     // 디시인사이드 게시글 URL 패턴
     private static final Pattern DC_URL_PATTERN = Pattern.compile(
-            "https?://(?:m\\.)?gall\\.dcinside\\.com/(?:mgallery|mini|board)/board/view/\\?.*"
+            "https?://(?:m\\.)?gall\\.dcinside\\.com/(?:mgallery/board|mini/board|board)/view/\\?.*"
     );
 
     // JSON 파서
