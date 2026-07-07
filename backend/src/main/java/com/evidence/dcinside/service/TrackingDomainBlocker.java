@@ -1,4 +1,4 @@
-package com.evidence.service;
+package com.evidence.dcinside.service;
 
 import org.openqa.selenium.chrome.ChromeDriver;
 import org.slf4j.Logger;

@@ -1,7 +1,7 @@
-package com.evidence.controller;
+package com.evidence.dcinside.controller;
 
-import com.evidence.dto.SearchRequest;
-import com.evidence.service.DcinsideSearchService;
+import com.evidence.dcinside.dto.SearchRequest;
+import com.evidence.dcinside.service.DcinsideSearchService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;

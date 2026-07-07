@@ -1,13 +1,13 @@
-package com.evidence.controller;
+package com.evidence.dcinside.controller;
 
+import com.evidence.dcinside.dto.CrawlRequest;
+import com.evidence.dcinside.dto.DcinsidePostData;
+import com.evidence.dcinside.service.DcinsideCrawlService;
+import com.evidence.dcinside.service.ScreenshotService;
 import com.evidence.dto.CaptureImage;
 import com.evidence.dto.CrawlProgressEvent;
-import com.evidence.dto.CrawlRequest;
-import com.evidence.dto.DcinsidePostData;
 import com.evidence.dto.TimedResult;
 import com.evidence.dto.UrlTiming;
-import com.evidence.service.DcinsideCrawlService;
-import com.evidence.service.ScreenshotService;
 import com.evidence.service.StageTimedException;
 import com.evidence.util.StepTimer;
 import com.evidence.util.StepTimings;
@@ -45,16 +45,6 @@ public class CrawlController {
     ) {
         this.crawlService = crawlService;
         this.screenshotService = screenshotService;
-    }
-
-    @PostMapping("/dcinside")
-    public ResponseEntity<?> crawlDcinside(@RequestBody CrawlRequest request) {
-        if (request.urls() == null || request.urls().isEmpty()) {
-            return ResponseEntity.badRequest().body(Map.of("error", "URL을 입력해 주세요."));
-        }
-
-        CrawlResult result = crawlAllUrls(request, event -> { });
-        return ResponseEntity.ok(result.toBody());
     }
 
     @PostMapping(value = "/dcinside/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)

@@ -5,15 +5,6 @@ export function getCaptureFilename(pathOrFilename: string): string {
   return parts[parts.length - 1] || pathOrFilename;
 }
 
-export function joinDirectoryPath(directoryPath: string, filename: string): string {
-  const base = directoryPath.trim().replace(/[/\\]+$/, '');
-  if (!base) {
-    return filename;
-  }
-  const separator = base.includes('\\') || /^[A-Za-z]:/.test(base) ? '\\' : '/';
-  return `${base}${separator}${filename}`;
-}
-
 export function formatTimestamp(date = new Date()): string {
   return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}_${String(date.getHours()).padStart(2, '0')}${String(date.getMinutes()).padStart(2, '0')}`;
 }

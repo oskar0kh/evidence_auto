@@ -1,12 +1,8 @@
 import axios from 'axios';
-import { parseSseChunk } from './sse';
-import { parseSearchTerms } from './searchUtils';
-import type { CrawlProgressEvent, CrawlResponse, SearchOptions, SearchResponse } from './types';
-
-const api = axios.create({
-  baseURL: '/api',
-  timeout: 300000,
-});
+import { parseSseChunk } from '../../shared/lib/sse';
+import { parseSearchTerms } from '../../features/search/searchUtils';
+import type { CrawlProgressEvent, CrawlResponse } from '../../features/crawl/types';
+import type { SearchOptions, SearchResponse } from '../../features/search/types';
 
 const searchApi = axios.create({
   baseURL: '/api',
@@ -87,7 +83,7 @@ export async function crawlDcinsideStream(
   return finalResult;
 }
 
-export async function searchDcinside(
+async function searchDcinside(
   query: string,
   options: SearchOptions = {}
 ): Promise<SearchResponse> {

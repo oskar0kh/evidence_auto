@@ -1,7 +1,7 @@
 import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
-import { crawlDcinsideStream, searchDcinsideAllTerms } from './api';
-import { saveCapturesToDirectory } from './captureFiles';
+import { crawlDcinsideStream, searchDcinsideAllTerms } from './platforms/dcinside/api';
+import { saveCapturesToDirectory } from './features/crawl/captureFiles';
 import {
   aggregateStepTimings,
   appendCrawlLogEntry,
@@ -10,19 +10,20 @@ import {
   getOrCreateLogDirectory,
   pickFirstStepMs,
   pickStepMs,
-} from './crawlLogExport';
-import DateRangeInput from './DateRangeInput';
-import { exportCrimeListExcel } from './excelExport';
-import { getOrCreateSubdirectory } from './localFileStorage';
-import { isNativeFolderPickerSupported, pickNativeDirectory } from './nativeFolderPicker';
+} from './features/crawl/crawlLogExport';
+import DateRangeInput from './shared/ui/DateRangeInput';
+import { exportCrimeListExcel } from './platforms/dcinside/excelExport';
+import { getOrCreateSubdirectory } from './shared/lib/localFileStorage';
+import { isNativeFolderPickerSupported, pickNativeDirectory } from './shared/lib/nativeFolderPicker';
 import {
   buildResultFolderName,
   formatTimestamp,
   getCaptureFilename,
   toCaptureRelativePath,
-} from './pathUtils';
-import type { CrawlLogEntry, DcinsidePostData, UrlTiming } from './types';
-import './App.css';
+} from './features/export/pathUtils';
+import type { CrawlLogEntry, UrlTiming } from './features/crawl/types';
+import type { DcinsidePostData } from './platforms/dcinside/types';
+import './app/App.css';
 
 function deriveCommunityName(posts: DcinsidePostData[]): string {
   const galleryNames = posts

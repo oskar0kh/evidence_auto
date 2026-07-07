@@ -1,5 +1,5 @@
 import ExcelJS from 'exceljs';
-import { getOrCreateSubdirectory, tryReadFileFromDirectory, writeArrayBufferToDirectory } from './localFileStorage';
+import { getOrCreateSubdirectory, tryReadFileFromDirectory, writeArrayBufferToDirectory } from '../../shared/lib/localFileStorage';
 import type { CrawlLogEntry } from './types';
 
 export const CRAWL_LOG_DIR = 'log';

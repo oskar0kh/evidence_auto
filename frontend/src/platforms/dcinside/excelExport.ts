@@ -1,12 +1,12 @@
 import ExcelJS from 'exceljs';
 import { extractBodySection, extractCommentsSection } from './commentSection';
-import { writeArrayBufferToDirectory } from './localFileStorage';
+import { writeArrayBufferToDirectory } from '../../shared/lib/localFileStorage';
 import {
   buildExcelFilename,
   extractSerialFromCaptureFilename,
   getCaptureFilename,
   toCaptureHyperlink,
-} from './pathUtils';
+} from '../../features/export/pathUtils';
 import type { DcinsidePostData } from './types';
 
 export interface ExportCrimeListOptions {

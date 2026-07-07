@@ -1,4 +1,4 @@
-package com.evidence.service;
+package com.evidence.dcinside.service;
 
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;

@@ -1,7 +1,8 @@
-package com.evidence.service;
+package com.evidence.dcinside.service;
 
 import com.evidence.dto.CaptureImage;
 import com.evidence.dto.TimedResult;
+import com.evidence.service.StageTimedException;
 import com.evidence.util.StepTimer;
 import com.evidence.util.StepTimings;
 import io.github.bonigarcia.wdm.WebDriverManager;
