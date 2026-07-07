@@ -1,26 +1,17 @@
 import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
 import { crawlDcinsideStream, searchDcinsideAllTerms } from './platforms/dcinside/api';
-import { saveCapturesToDirectory } from './features/crawl/captureFiles';
 import {
   aggregateStepTimings,
   appendCrawlLogEntry,
   formatExecutedAt,
   formatFailureReasons,
-  getOrCreateLogDirectory,
   pickFirstStepMs,
   pickStepMs,
 } from './features/crawl/crawlLogExport';
 import DateRangeInput from './shared/ui/DateRangeInput';
-import { exportCrimeListExcel } from './platforms/dcinside/excelExport';
-import { getOrCreateSubdirectory } from './shared/lib/localFileStorage';
+import { persistCrimeListAndCaptures } from './features/export/persistResults';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './shared/lib/nativeFolderPicker';
-import {
-  buildResultFolderName,
-  formatTimestamp,
-  getCaptureFilename,
-  toCaptureRelativePath,
-} from './features/export/pathUtils';
 import type { CrawlLogEntry, CrawlStreamResult, UrlTiming } from './features/crawl/types';
 import type { DcinsidePostData } from './platforms/dcinside/types';
 import './app/App.css';
@@ -180,13 +171,23 @@ function collectCrawlResponse(
   return response.data.length;
 }
 
-function formatInterruptedMessage(response: CrawlStreamResult): string {
-  const savedCount = response.data.length;
+function formatInterruptedMessage(
+  response: CrawlStreamResult,
+  autoSaved: boolean,
+  savedCount: number
+): string {
   const base = response.interruptMessage ?? '크롤링이 중단됐습니다.';
   if (savedCount > 0) {
+    if (autoSaved) {
+      return `${base} 완료된 ${savedCount}건은 선택한 폴더에 자동 저장됐습니다.`;
+    }
     return `${base} 완료된 ${savedCount}건은 화면에 보관됐으며, 범죄일람표·캡처화면 저장으로 보낼 수 있습니다.`;
   }
   return base;
+}
+
+function appendAutoSaveNotice(message: string, savedCount: number): string {
+  return `${message} 완료된 ${savedCount}건은 선택한 폴더에 자동 저장됐습니다.`;
 }
 
 export default function App() {
@@ -200,6 +201,7 @@ export default function App() {
   const [saving, setSaving] = useState(false);
   const [progress, setProgress] = useState<CrawlProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [savedResults, setSavedResults] = useState<DcinsidePostData[]>([]);
   const [errors, setErrors] = useState<{ url: string; error: string }[]>([]);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -288,6 +290,7 @@ export default function App() {
     setElapsedMs(0);
     setLoading(true);
     setError(null);
+    setInfoMessage(null);
     setErrors([]);
     setProgress({
       completed: 0,
@@ -380,12 +383,18 @@ export default function App() {
       setElapsedMs(0);
       setLoading(true);
       setError(null);
+      setInfoMessage(null);
       setErrors([]);
     }
 
     const batchErrors: { url: string; error: string }[] = [];
     const batchTimings: UrlTiming[] = [];
+    let batchResults: DcinsidePostData[] = [];
     let successCount = 0;
+    let wasInterrupted = false;
+    let crawlThrew = false;
+    let interruptMessage: string | undefined;
+    let errorMessage: string | null = null;
     const logContext: CrawlLogContext = options?.logContext ?? {
       inputMode: 'URL 직접입력',
     };
@@ -415,26 +424,88 @@ export default function App() {
           });
         },
         (post) => {
+          batchResults = mergeSavedResults(batchResults, [post]);
           setSavedResults((prev) => mergeSavedResults(prev, [post]));
         }
       );
 
       successCount = collectCrawlResponse(response, batchErrors, batchTimings);
       if (response.data.length > 0) {
+        batchResults = mergeSavedResults(batchResults, response.data);
         setSavedResults((prev) => mergeSavedResults(prev, response.data));
       }
 
+      wasInterrupted = Boolean(response.interrupted);
+      interruptMessage = response.interruptMessage;
       setErrors(batchErrors);
       if (response.interrupted) {
-        setError(formatInterruptedMessage(response));
+        errorMessage = formatInterruptedMessage(
+          { data: batchResults, errors: batchErrors, interrupted: true, interruptMessage },
+          false,
+          batchResults.length
+        );
       } else if (successCount === 0 && batchErrors.length > 0) {
-        setError('이번 요청의 모든 URL 처리에 실패했습니다.');
+        errorMessage = '이번 요청의 모든 URL 처리에 실패했습니다.';
+      } else if (batchErrors.length > 0) {
+        errorMessage = `일부 URL 처리에 실패했습니다. (성공 ${successCount}건, 실패 ${batchErrors.length}건)`;
       }
     } catch (e) {
-      const message = resolveCrawlError(e);
-      setError(message);
-      batchErrors.push({ url: '(크롤링)', error: message });
+      crawlThrew = true;
+      errorMessage = resolveCrawlError(e);
+      batchErrors.push({ url: '(크롤링)', error: errorMessage });
     } finally {
+      let autoSaved = false;
+
+      if (batchResults.length > 0 && saveDirectoryRef.current) {
+        try {
+          const { postsForExcel } = await persistCrimeListAndCaptures(
+            saveDirectoryRef.current,
+            batchResults,
+            {
+              communityName: deriveCommunityName(batchResults),
+              keyword: lastSearchKeywordRef.current,
+            }
+          );
+          setSavedResults((prev) => mergeSavedResults(prev, postsForExcel));
+          autoSaved = true;
+        } catch (e) {
+          const saveMessage =
+            e instanceof Error ? e.message : '자동 저장 중 오류가 발생했습니다.';
+          errorMessage = errorMessage
+            ? `${errorMessage} (자동 저장 실패: ${saveMessage})`
+            : `자동 저장 실패: ${saveMessage}`;
+        }
+      }
+
+      if (errorMessage) {
+        if (autoSaved) {
+          if (wasInterrupted) {
+            errorMessage = formatInterruptedMessage(
+              {
+                data: batchResults,
+                errors: batchErrors,
+                interrupted: true,
+                interruptMessage,
+              },
+              true,
+              batchResults.length
+            );
+          } else {
+            errorMessage = appendAutoSaveNotice(errorMessage, batchResults.length);
+          }
+        }
+        setError(errorMessage);
+        setInfoMessage(null);
+      } else if (autoSaved) {
+        setError(null);
+        setInfoMessage(
+          `크롤링이 완료됐습니다. ${batchResults.length}건이 선택한 폴더에 저장됐습니다.`
+        );
+      } else {
+        setError(null);
+        setInfoMessage(null);
+      }
+
       const totalMs =
         crawlStartAtRef.current !== null ? Date.now() - crawlStartAtRef.current : 0;
       if (crawlStartAtRef.current !== null) {
@@ -498,24 +569,17 @@ export default function App() {
     }
     setSaving(true);
     try {
-      await getOrCreateLogDirectory(saveDirectoryRef.current);
-      const stamp = formatTimestamp();
-      const resultDir = await getOrCreateSubdirectory(
+      const { postsForExcel } = await persistCrimeListAndCaptures(
         saveDirectoryRef.current,
-        buildResultFolderName(stamp)
+        savedResults,
+        {
+          communityName: deriveCommunityName(savedResults),
+          keyword: lastSearchKeywordRef.current,
+        }
       );
-      const postsForExcel = savedResults.map((post) => ({
-        ...post,
-        captureFilePath: toCaptureRelativePath(getCaptureFilename(post.captureFilePath)),
-      }));
-      await saveCapturesToDirectory(resultDir, savedResults);
-      await exportCrimeListExcel(postsForExcel, resultDir, {
-        communityName: deriveCommunityName(savedResults),
-        keyword: lastSearchKeywordRef.current,
-        stamp,
-      });
       setSavedResults(postsForExcel);
       setError(null);
+      setInfoMessage(null);
       window.alert('저장이 완료됐습니다.');
     } catch (e) {
       const message = e instanceof Error ? e.message : '엑셀 생성 중 오류가 발생했습니다.';
@@ -529,7 +593,10 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>범죄일람표 크롤러</h1>
-        <p>크롤링 결과는 화면에 누적되며, 범죄일람표·캡처 저장 시 선택한 폴더에 파일이 저장됩니다.</p>
+        <p>
+          크롤링이 끝나면 성공·오류 여부와 관계없이 완료된 건은 선택한 폴더에 자동 저장됩니다.
+          저장 버튼은 화면에 누적된 결과를 다시 저장할 때 사용합니다.
+        </p>
       </header>
 
       <main className="app-main">
@@ -664,6 +731,7 @@ export default function App() {
             </div>
           )}
 
+          {infoMessage && <div className="message info">{infoMessage}</div>}
           {error && <div className="message error">{error}</div>}
         </div>
 
