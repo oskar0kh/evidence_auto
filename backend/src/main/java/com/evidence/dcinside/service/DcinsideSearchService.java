@@ -1,6 +1,8 @@
 package com.evidence.dcinside.service;
 
 import com.evidence.dcinside.dto.GalleryCandidate;
+import com.evidence.dcinside.dto.SearchPageEvent;
+import com.evidence.dcinside.dto.SearchStreamCriteria;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -21,6 +23,7 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -51,53 +54,26 @@ public class DcinsideSearchService {
             .build();
 
     public List<String> searchIntegrated(String query, Integer maxResults) throws Exception {
-        List<String> terms = parseSearchTerms(query);
         Set<String> collected = new LinkedHashSet<>();
-
-        for (int i = 0; i < terms.size(); i++) {
-            collected.addAll(searchIntegratedSingle(terms.get(i), maxResults));
-            if (i < terms.size() - 1) {
-                Thread.sleep(TERM_SEARCH_DELAY_MS);
-            }
-        }
-
+        SearchStreamCriteria criteria = new SearchStreamCriteria(query, maxResults, null, null, null);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true);
         return new ArrayList<>(collected);
     }
 
     public List<String> searchIntegratedByDateRange(String query, LocalDate startDate, LocalDate endDate)
             throws Exception {
-        if (startDate == null || endDate == null) {
-            throw new IllegalArgumentException("검색 기간의 시작일과 종료일을 모두 입력해 주세요.");
-        }
-        if (startDate.isAfter(endDate)) {
-            throw new IllegalArgumentException("검색 기간의 시작일은 종료일보다 이후일 수 없습니다.");
-        }
-
-        List<String> terms = parseSearchTerms(query);
+        validateDateRange(startDate, endDate);
         Set<String> collected = new LinkedHashSet<>();
-
-        for (int i = 0; i < terms.size(); i++) {
-            collected.addAll(searchIntegratedByDateRangeSingle(terms.get(i), startDate, endDate));
-            if (i < terms.size() - 1) {
-                Thread.sleep(TERM_SEARCH_DELAY_MS);
-            }
-        }
-
+        SearchStreamCriteria criteria = new SearchStreamCriteria(query, null, startDate, endDate, null);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true);
         return new ArrayList<>(collected);
     }
 
     public List<String> searchGallery(String query, String galleryId, Integer maxResults) throws Exception {
         String normalizedGalleryId = normalizeGalleryId(galleryId);
-        List<String> terms = parseSearchTerms(query);
         Set<String> collected = new LinkedHashSet<>();
-
-        for (int i = 0; i < terms.size(); i++) {
-            collected.addAll(searchSingle(terms.get(i), maxResults, normalizedGalleryId));
-            if (i < terms.size() - 1) {
-                Thread.sleep(TERM_SEARCH_DELAY_MS);
-            }
-        }
-
+        SearchStreamCriteria criteria = new SearchStreamCriteria(query, maxResults, null, null, normalizedGalleryId);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true);
         return filterUrlsByGalleryId(new ArrayList<>(collected), normalizedGalleryId);
     }
 
@@ -107,25 +83,126 @@ public class DcinsideSearchService {
             LocalDate startDate,
             LocalDate endDate
     ) throws Exception {
+        validateDateRange(startDate, endDate);
+        String normalizedGalleryId = normalizeGalleryId(galleryId);
+        Set<String> collected = new LinkedHashSet<>();
+        SearchStreamCriteria criteria = new SearchStreamCriteria(
+                query, null, startDate, endDate, normalizedGalleryId
+        );
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true);
+        return filterUrlsByGalleryId(new ArrayList<>(collected), normalizedGalleryId);
+    }
+
+    /**
+     * 검색 페이지를 순회하며 URL을 발견할 때마다 {@code onUrl}에 전달합니다.
+     * {@code onUrl}이 false를 반환하면 검색을 중단합니다.
+     */
+    public void forEachSearchUrl(
+            SearchStreamCriteria criteria,
+            Set<String> seen,
+            Consumer<SearchPageEvent> onPage,
+            SearchUrlConsumer onUrl
+    ) throws Exception {
+        if (criteria.isDateRangeSearch()) {
+            validateDateRange(criteria.startDate(), criteria.endDate());
+        }
+
+        List<String> terms = parseSearchTerms(criteria.query());
+        String galleryId = hasGalleryId(criteria.galleryId())
+                ? normalizeGalleryId(criteria.galleryId())
+                : null;
+        boolean dateRange = criteria.isDateRangeSearch();
+        int limit = dateRange
+                ? Integer.MAX_VALUE
+                : resolveMaxResults(criteria.maxResults());
+        int maxPages = dateRange ? MAX_DATE_RANGE_PAGE_LIMIT : MAX_PAGE_LIMIT;
+
+        for (int termIdx = 0; termIdx < terms.size(); termIdx++) {
+            String term = terms.get(termIdx);
+            String encodedQuery = URLEncoder.encode(term, StandardCharsets.UTF_8);
+            int termCollected = 0;
+            boolean reachedOlderThanRange = false;
+
+            for (int page = 1; page <= maxPages && !reachedOlderThanRange; page++) {
+                if (!dateRange && termCollected >= limit) {
+                    break;
+                }
+
+                onPage.accept(new SearchPageEvent(termIdx + 1, terms.size(), term, page, seen.size()));
+
+                String searchUrl = buildSearchUrl(page, encodedQuery, galleryId);
+                Document doc = fetchDocument(httpClient, searchUrl);
+                List<SearchResultItem> pageResults = extractPageResults(doc);
+                if (pageResults.isEmpty()) {
+                    break;
+                }
+
+                for (SearchResultItem item : pageResults) {
+                    if (!matchesGalleryId(item.url(), galleryId)) {
+                        continue;
+                    }
+
+                    if (dateRange) {
+                        LocalDate postDate = item.postDate();
+                        if (postDate == null) {
+                            continue;
+                        }
+                        if (postDate.isAfter(criteria.endDate())) {
+                            continue;
+                        }
+                        if (postDate.isBefore(criteria.startDate())) {
+                            reachedOlderThanRange = true;
+                            break;
+                        }
+                    }
+
+                    if (!seen.add(item.url())) {
+                        continue;
+                    }
+
+                    termCollected++;
+                    if (!onUrl.accept(item.url())) {
+                        return;
+                    }
+
+                    if (!dateRange && termCollected >= limit) {
+                        break;
+                    }
+                }
+
+                if (!reachedOlderThanRange && page < maxPages) {
+                    if (!dateRange && termCollected >= limit) {
+                        break;
+                    }
+                    Thread.sleep(TERM_SEARCH_DELAY_MS);
+                }
+            }
+
+            if (termIdx < terms.size() - 1) {
+                Thread.sleep(TERM_SEARCH_DELAY_MS);
+            }
+        }
+    }
+
+    @FunctionalInterface
+    public interface SearchUrlConsumer {
+        boolean accept(String url) throws Exception;
+    }
+
+    private static void validateDateRange(LocalDate startDate, LocalDate endDate) {
         if (startDate == null || endDate == null) {
             throw new IllegalArgumentException("검색 기간의 시작일과 종료일을 모두 입력해 주세요.");
         }
         if (startDate.isAfter(endDate)) {
             throw new IllegalArgumentException("검색 기간의 시작일은 종료일보다 이후일 수 없습니다.");
         }
+    }
 
-        String normalizedGalleryId = normalizeGalleryId(galleryId);
-        List<String> terms = parseSearchTerms(query);
-        Set<String> collected = new LinkedHashSet<>();
-
-        for (int i = 0; i < terms.size(); i++) {
-            collected.addAll(searchByDateRangeSingle(terms.get(i), startDate, endDate, normalizedGalleryId));
-            if (i < terms.size() - 1) {
-                Thread.sleep(TERM_SEARCH_DELAY_MS);
-            }
+    private static int resolveMaxResults(Integer maxResults) {
+        if (maxResults == null || maxResults <= 0) {
+            return DEFAULT_MAX_RESULTS;
         }
-
-        return filterUrlsByGalleryId(new ArrayList<>(collected), normalizedGalleryId);
+        return Math.min(maxResults, DEFAULT_MAX_RESULTS);
     }
 
     public List<GalleryCandidate> searchGalleriesByName(String galleryName) throws Exception {
@@ -274,91 +351,6 @@ public class DcinsideSearchService {
         } catch (DateTimeParseException e) {
             throw new IllegalArgumentException("날짜 형식은 yyyy-MM-dd 이어야 합니다: " + value);
         }
-    }
-
-    private List<String> searchIntegratedSingle(String term, Integer maxResults) throws Exception {
-        return searchSingle(term, maxResults, null);
-    }
-
-    private List<String> searchIntegratedByDateRangeSingle(String term, LocalDate startDate, LocalDate endDate)
-            throws Exception {
-        return searchByDateRangeSingle(term, startDate, endDate, null);
-    }
-
-    private List<String> searchSingle(String term, Integer maxResults, String galleryId) throws Exception {
-        int limit = maxResults == null || maxResults <= 0 ? DEFAULT_MAX_RESULTS : Math.min(maxResults, DEFAULT_MAX_RESULTS);
-        String encodedQuery = URLEncoder.encode(term, StandardCharsets.UTF_8);
-
-        Set<String> collected = new LinkedHashSet<>();
-        for (int page = 1; page <= MAX_PAGE_LIMIT && collected.size() < limit; page++) {
-            String searchUrl = buildSearchUrl(page, encodedQuery, galleryId);
-            Document doc = fetchDocument(httpClient, searchUrl);
-            List<SearchResultItem> pageResults = extractPageResults(doc);
-            if (pageResults.isEmpty()) {
-                break;
-            }
-
-            for (SearchResultItem item : pageResults) {
-                if (!matchesGalleryId(item.url(), galleryId)) {
-                    continue;
-                }
-                collected.add(item.url());
-                if (collected.size() >= limit) {
-                    break;
-                }
-            }
-
-            if (page < MAX_PAGE_LIMIT && collected.size() < limit) {
-                Thread.sleep(TERM_SEARCH_DELAY_MS);
-            }
-        }
-
-        return new ArrayList<>(collected);
-    }
-
-    private List<String> searchByDateRangeSingle(
-            String term,
-            LocalDate startDate,
-            LocalDate endDate,
-            String galleryId
-    ) throws Exception {
-        String encodedQuery = URLEncoder.encode(term, StandardCharsets.UTF_8);
-
-        Set<String> collected = new LinkedHashSet<>();
-        boolean reachedOlderThanRange = false;
-
-        for (int page = 1; page <= MAX_DATE_RANGE_PAGE_LIMIT && !reachedOlderThanRange; page++) {
-            String searchUrl = buildSearchUrl(page, encodedQuery, galleryId);
-            Document doc = fetchDocument(httpClient, searchUrl);
-            List<SearchResultItem> pageResults = extractPageResults(doc);
-            if (pageResults.isEmpty()) {
-                break;
-            }
-
-            for (SearchResultItem item : pageResults) {
-                if (!matchesGalleryId(item.url(), galleryId)) {
-                    continue;
-                }
-                LocalDate postDate = item.postDate();
-                if (postDate == null) {
-                    continue;
-                }
-                if (postDate.isAfter(endDate)) {
-                    continue;
-                }
-                if (postDate.isBefore(startDate)) {
-                    reachedOlderThanRange = true;
-                    break;
-                }
-                collected.add(item.url());
-            }
-
-            if (!reachedOlderThanRange && page < MAX_DATE_RANGE_PAGE_LIMIT) {
-                Thread.sleep(TERM_SEARCH_DELAY_MS);
-            }
-        }
-
-        return new ArrayList<>(collected);
     }
 
     private String buildSearchUrl(int page, String encodedQuery, String galleryId) {

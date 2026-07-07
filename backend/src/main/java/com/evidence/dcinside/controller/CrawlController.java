@@ -2,6 +2,9 @@ package com.evidence.dcinside.controller;
 
 import com.evidence.dcinside.dto.CrawlRequest;
 import com.evidence.dcinside.dto.DcinsidePostData;
+import com.evidence.dcinside.dto.SearchCrawlRequest;
+import com.evidence.dcinside.dto.SearchPageEvent;
+import com.evidence.dcinside.dto.SearchStreamCriteria;
 import com.evidence.dcinside.service.DcinsideCrawlService;
 import com.evidence.dcinside.service.DcinsideSearchService;
 import com.evidence.dcinside.service.ScreenshotService;
@@ -24,11 +27,14 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.servlet.mvc.method.annotation.SseEmitter;
 
 import java.io.IOException;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
 
@@ -38,19 +44,22 @@ public class CrawlController {
 
     private static final Logger log = LoggerFactory.getLogger(CrawlController.class);
     private final DcinsideCrawlService crawlService;
+    private final DcinsideSearchService searchService;
     private final ScreenshotService screenshotService;
 
     public CrawlController(
             DcinsideCrawlService crawlService,
+            DcinsideSearchService searchService,
             ScreenshotService screenshotService
     ) {
         this.crawlService = crawlService;
+        this.searchService = searchService;
         this.screenshotService = screenshotService;
     }
 
     @PostMapping(value = "/dcinside/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter crawlDcinsideStream(@RequestBody CrawlRequest request) {
-        SseEmitter emitter = new SseEmitter(-1L); // 타임아웃 없음
+        SseEmitter emitter = new SseEmitter(-1L);
 
         if (request.urls() == null || request.urls().isEmpty()) {
             sendErrorAndComplete(emitter, "URL을 입력해 주세요.");
@@ -78,6 +87,36 @@ public class CrawlController {
         return emitter;
     }
 
+    @PostMapping(value = "/dcinside/search-stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter searchCrawlDcinsideStream(@RequestBody SearchCrawlRequest request) {
+        SseEmitter emitter = new SseEmitter(-1L);
+
+        if (request.query() == null || request.query().isBlank()) {
+            sendErrorAndComplete(emitter, "검색어를 입력해 주세요.");
+            return emitter;
+        }
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                CrawlCallbacks callbacks = CrawlCallbacks.streaming(this, emitter);
+                CrawlSummary summary = searchAndCrawl(request, callbacks);
+                sendEvent(emitter, "complete", summary.toBody());
+                emitter.complete();
+            } catch (Exception e) {
+                log.error("SSE search-crawl stream failed", e);
+                sendErrorAndComplete(
+                        emitter,
+                        e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
+                );
+            }
+        });
+
+        emitter.onTimeout(() -> log.warn("SSE search-crawl stream timed out"));
+        emitter.onError(error -> log.warn("SSE search-crawl stream error: {}", error.getMessage()));
+
+        return emitter;
+    }
+
     private CrawlSummary crawlAllUrls(CrawlRequest request, CrawlCallbacks callbacks) {
         List<String> validUrls = request.urls().stream()
                 .map(url -> url == null ? "" : url.trim())
@@ -87,89 +126,146 @@ public class CrawlController {
             validUrls = DcinsideSearchService.filterUrlsByGalleryId(validUrls, request.galleryId());
         }
 
-        int total = validUrls.size();
-        int completed = 0;
-        int successCount = 0;
-        int failCount = 0;
-        int nextSerial = request.startSerial() != null ? request.startSerial() : 1;
+        CrawlState state = new CrawlState(validUrls.size(), request.startSerial());
 
         try (ScreenshotService.CaptureSession captureSession = screenshotService.openCaptureSession()) {
             for (String trimmed : validUrls) {
-                callbacks.progress().accept(new CrawlProgressEvent(
-                        completed, total, trimmed, "text-crawl", successCount, failCount
-                ));
-
-                StepTimer timer = new StepTimer(log, "crawl-url " + trimmed);
-                List<StepTimings> partialTimings = new ArrayList<>();
-
-                try {
-                    TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed);
-                    partialTimings.add(crawled.timings());
-                    timer.step("text-crawl");
-
-                    callbacks.progress().accept(new CrawlProgressEvent(
-                            completed, total, trimmed, "screenshot", successCount, failCount
-                    ));
-
-                    int excelRowNumber = nextSerial++;
-                    String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
-                    TimedResult<CaptureImage> capture =
-                            captureSession.captureFullPage(trimmed, excelRowNumber, postNo);
-                    partialTimings.add(capture.timings());
-                    timer.step("screenshot");
-
-                    callbacks.progress().accept(new CrawlProgressEvent(
-                            completed, total, trimmed, "attach-capture", successCount, failCount
-                    ));
-
-                    DcinsidePostData attached = crawlService.attachCapture(crawled.value(), capture.value());
-                    timer.step("attach-capture");
-
-                    StepTimings merged = StepTimings.merge(
-                            partialTimings.toArray(StepTimings[]::new)
-                    );
-                    StepTimings withOuter = mergeWithOuter(timer.finish(), merged);
-                    UrlTiming successTiming = new UrlTiming(
-                            trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()
-                    );
-                    callbacks.urlResult().accept(attached);
-                    callbacks.urlTiming().accept(successTiming);
-
-                    successCount++;
-                    completed++;
-                    callbacks.progress().accept(new CrawlProgressEvent(
-                            completed, total, trimmed, "url-done", successCount, failCount
-                    ));
-                } catch (StageTimedException e) {
-                    partialTimings.add(e.timings());
-                    log.warn("Crawl failed for {} at {}: {}", trimmed, e.stage(), e.getMessage());
-                    Map<String, String> error = errorEntry(trimmed, e);
-                    UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
-                    callbacks.urlError().accept(error);
-                    callbacks.urlTiming().accept(failedTiming);
-                    failCount++;
-                    completed++;
-                    callbacks.progress().accept(new CrawlProgressEvent(
-                            completed, total, trimmed, "url-failed", successCount, failCount
-                    ));
-                } catch (Exception e) {
-                    log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
-                    Map<String, String> error = errorEntry(trimmed, e);
-                    UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
-                    callbacks.urlError().accept(error);
-                    callbacks.urlTiming().accept(failedTiming);
-                    failCount++;
-                    completed++;
-                    callbacks.progress().accept(new CrawlProgressEvent(
-                            completed, total, trimmed, "url-failed", successCount, failCount
-                    ));
-                }
+                processSingleUrl(trimmed, state, captureSession, callbacks);
             }
         } catch (Exception e) {
             throw new IllegalStateException("스크린샷 세션을 시작할 수 없습니다: " + e.getMessage(), e);
         }
 
-        return new CrawlSummary(successCount, failCount, total);
+        return state.toSummary();
+    }
+
+    private CrawlSummary searchAndCrawl(SearchCrawlRequest request, CrawlCallbacks callbacks) {
+        LocalDate startDate = DcinsideSearchService.parseRequestDate(request.startDate());
+        LocalDate endDate = DcinsideSearchService.parseRequestDate(request.endDate());
+        SearchStreamCriteria criteria = new SearchStreamCriteria(
+                request.query(),
+                request.maxResults(),
+                startDate,
+                endDate,
+                request.galleryId()
+        );
+
+        Set<String> seen = new LinkedHashSet<>();
+        CrawlState state = new CrawlState(0, request.startSerial());
+
+        try (ScreenshotService.CaptureSession captureSession = screenshotService.openCaptureSession()) {
+            searchService.forEachSearchUrl(
+                    criteria,
+                    seen,
+                    pageEvent -> emitSearchProgress(pageEvent, state, callbacks),
+                    url -> {
+                        state.total = Math.max(state.total, seen.size());
+                        processSingleUrl(url, state, captureSession, callbacks);
+                        return true;
+                    }
+            );
+        } catch (Exception e) {
+            throw new IllegalStateException("스크린샷 세션을 시작할 수 없습니다: " + e.getMessage(), e);
+        }
+
+        state.total = Math.max(state.total, state.completed);
+        return state.toSummary();
+    }
+
+    private void emitSearchProgress(SearchPageEvent pageEvent, CrawlState state, CrawlCallbacks callbacks) {
+        String label = String.format(
+                "검색어 %d/%d: \"%s\" (페이지 %d, 발견 %d건)",
+                pageEvent.termIndex(),
+                pageEvent.termTotal(),
+                pageEvent.term(),
+                pageEvent.page(),
+                pageEvent.discoveredCount()
+        );
+        callbacks.progress().accept(new CrawlProgressEvent(
+                state.completed,
+                state.total,
+                label,
+                "search",
+                state.successCount,
+                state.failCount
+        ));
+    }
+
+    private void processSingleUrl(
+            String trimmed,
+            CrawlState state,
+            ScreenshotService.CaptureSession captureSession,
+            CrawlCallbacks callbacks
+    ) {
+        callbacks.progress().accept(new CrawlProgressEvent(
+                state.completed, state.total, trimmed, "text-crawl", state.successCount, state.failCount
+        ));
+
+        StepTimer timer = new StepTimer(log, "crawl-url " + trimmed);
+        List<StepTimings> partialTimings = new ArrayList<>();
+
+        try {
+            TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed);
+            partialTimings.add(crawled.timings());
+            timer.step("text-crawl");
+
+            callbacks.progress().accept(new CrawlProgressEvent(
+                    state.completed, state.total, trimmed, "screenshot", state.successCount, state.failCount
+            ));
+
+            int excelRowNumber = state.nextSerial++;
+            String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
+            TimedResult<CaptureImage> capture =
+                    captureSession.captureFullPage(trimmed, excelRowNumber, postNo);
+            partialTimings.add(capture.timings());
+            timer.step("screenshot");
+
+            callbacks.progress().accept(new CrawlProgressEvent(
+                    state.completed, state.total, trimmed, "attach-capture", state.successCount, state.failCount
+            ));
+
+            DcinsidePostData attached = crawlService.attachCapture(crawled.value(), capture.value());
+            timer.step("attach-capture");
+
+            StepTimings merged = StepTimings.merge(
+                    partialTimings.toArray(StepTimings[]::new)
+            );
+            StepTimings withOuter = mergeWithOuter(timer.finish(), merged);
+            UrlTiming successTiming = new UrlTiming(
+                    trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()
+            );
+            callbacks.urlResult().accept(attached);
+            callbacks.urlTiming().accept(successTiming);
+
+            state.successCount++;
+            state.completed++;
+            callbacks.progress().accept(new CrawlProgressEvent(
+                    state.completed, state.total, trimmed, "url-done", state.successCount, state.failCount
+            ));
+        } catch (StageTimedException e) {
+            partialTimings.add(e.timings());
+            log.warn("Crawl failed for {} at {}: {}", trimmed, e.stage(), e.getMessage());
+            Map<String, String> error = errorEntry(trimmed, e);
+            UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
+            callbacks.urlError().accept(error);
+            callbacks.urlTiming().accept(failedTiming);
+            state.failCount++;
+            state.completed++;
+            callbacks.progress().accept(new CrawlProgressEvent(
+                    state.completed, state.total, trimmed, "url-failed", state.successCount, state.failCount
+            ));
+        } catch (Exception e) {
+            log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
+            Map<String, String> error = errorEntry(trimmed, e);
+            UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
+            callbacks.urlError().accept(error);
+            callbacks.urlTiming().accept(failedTiming);
+            state.failCount++;
+            state.completed++;
+            callbacks.progress().accept(new CrawlProgressEvent(
+                    state.completed, state.total, trimmed, "url-failed", state.successCount, state.failCount
+            ));
+        }
     }
 
     private void sendEvent(SseEmitter emitter, String eventName, Object payload) {
@@ -219,6 +315,23 @@ public class CrawlController {
             entry.put("stage", stageTimed.stage());
         }
         return entry;
+    }
+
+    private static final class CrawlState {
+        int total;
+        int completed;
+        int successCount;
+        int failCount;
+        int nextSerial;
+
+        CrawlState(int total, Integer startSerial) {
+            this.total = total;
+            this.nextSerial = startSerial != null ? startSerial : 1;
+        }
+
+        CrawlSummary toSummary() {
+            return new CrawlSummary(successCount, failCount, completed);
+        }
     }
 
     private record CrawlCallbacks(

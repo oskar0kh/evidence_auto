@@ -14,41 +14,11 @@ function isAbortError(e: unknown): boolean {
   return e instanceof DOMException && e.name === 'AbortError';
 }
 
-export async function crawlDcinsideStream(
-  urls: string[],
-  startSerial: number | undefined,
+async function consumeCrawlSseStream(
+  response: Response,
   onProgress: (progress: CrawlProgressEvent) => void,
-  onUrlResult?: (post: DcinsidePostData) => void,
-  signal?: AbortSignal,
-  galleryId?: string
+  onUrlResult?: (post: DcinsidePostData) => void
 ): Promise<CrawlStreamResult> {
-  const response = await fetch('/api/crawl/dcinside/stream', {
-    method: 'POST',
-    headers: {
-      Accept: 'text/event-stream',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      urls,
-      startSerial: startSerial ?? null,
-      galleryId: galleryId?.trim() || null,
-    }),
-    signal,
-  });
-
-  if (!response.ok) {
-    let message = `서버 오류(${response.status})`;
-    try {
-      const body = (await response.json()) as { error?: string };
-      if (body.error) {
-        message = body.error;
-      }
-    } catch {
-      // ignore JSON parse errors
-    }
-    throw new Error(message);
-  }
-
   if (!response.body) {
     throw new Error('스트리밍 응답을 받지 못했습니다.');
   }
@@ -163,6 +133,85 @@ export async function crawlDcinsideStream(
   }
 
   throw new Error(interruptMessage ?? '크롤링 결과를 받지 못했습니다.');
+}
+
+async function postCrawlStream(
+  endpoint: string,
+  body: Record<string, unknown>,
+  onProgress: (progress: CrawlProgressEvent) => void,
+  onUrlResult?: (post: DcinsidePostData) => void,
+  signal?: AbortSignal
+): Promise<CrawlStreamResult> {
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Accept: 'text/event-stream',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  if (!response.ok) {
+    let message = `서버 오류(${response.status})`;
+    try {
+      const errorBody = (await response.json()) as { error?: string };
+      if (errorBody.error) {
+        message = errorBody.error;
+      }
+    } catch {
+      // ignore JSON parse errors
+    }
+    throw new Error(message);
+  }
+
+  return consumeCrawlSseStream(response, onProgress, onUrlResult);
+}
+
+export async function crawlDcinsideStream(
+  urls: string[],
+  startSerial: number | undefined,
+  onProgress: (progress: CrawlProgressEvent) => void,
+  onUrlResult?: (post: DcinsidePostData) => void,
+  signal?: AbortSignal,
+  galleryId?: string
+): Promise<CrawlStreamResult> {
+  return postCrawlStream(
+    '/api/crawl/dcinside/stream',
+    {
+      urls,
+      startSerial: startSerial ?? null,
+      galleryId: galleryId?.trim() || null,
+    },
+    onProgress,
+    onUrlResult,
+    signal
+  );
+}
+
+export async function searchCrawlDcinsideStream(
+  query: string,
+  options: SearchOptions = {},
+  startSerial: number | undefined,
+  onProgress: (progress: CrawlProgressEvent) => void,
+  onUrlResult?: (post: DcinsidePostData) => void,
+  signal?: AbortSignal
+): Promise<CrawlStreamResult> {
+  const { maxResults = 100, startDate, endDate, galleryId } = options;
+  return postCrawlStream(
+    '/api/crawl/dcinside/search-stream',
+    {
+      query,
+      maxResults,
+      startDate: startDate ?? null,
+      endDate: endDate ?? null,
+      galleryId: galleryId?.trim() || null,
+      startSerial: startSerial ?? null,
+    },
+    onProgress,
+    onUrlResult,
+    signal
+  );
 }
 
 async function searchDcinside(

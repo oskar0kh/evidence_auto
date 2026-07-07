@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
-import { crawlDcinsideStream, lookupDcinsideGalleries, searchDcinsideAllTerms } from './platforms/dcinside/api';
+import { crawlDcinsideStream, lookupDcinsideGalleries, searchCrawlDcinsideStream } from './platforms/dcinside/api';
 import { filterUrlsByGalleryId } from './features/search/searchUtils';
 import {
   aggregateStepTimings,
@@ -108,6 +108,7 @@ function formatDuration(ms: number): string {
 }
 
 const STAGE_LABELS: Record<string, string> = {
+  search: '검색',
   'text-crawl': '글·댓글 수집',
   screenshot: '화면 캡처',
   'attach-capture': '결과 저장',
@@ -116,6 +117,7 @@ const STAGE_LABELS: Record<string, string> = {
 };
 
 const STAGE_WEIGHTS: Record<string, number> = {
+  search: 0.05,
   'text-crawl': 0.15,
   screenshot: 0.55,
   'attach-capture': 0.85,
@@ -443,28 +445,6 @@ export default function App() {
     const galleryId = gallery?.id;
     const galleryLabel = gallery ? formatGalleryLabel(gallery) : undefined;
     const useGallerySearch = Boolean(galleryId);
-    const abortSignal = beginCrawlSession();
-
-    crawlStartAtRef.current = Date.now();
-    setElapsedMs(0);
-    setLoading(true);
-    setError(null);
-    setInfoMessage(null);
-    setErrors([]);
-    const searchProgressLabel = useGallerySearch
-      ? useDateRange
-        ? `갤러리 ${galleryLabel} 기간 검색 중…`
-        : `갤러리 ${galleryLabel} 검색 중…`
-      : useDateRange
-        ? '기간 내 디시 통합검색 중…'
-        : '디시 통합검색 중…';
-    setProgress({
-      completed: 0,
-      total: 1,
-      currentUrl: searchProgressLabel,
-      successCount: 0,
-      failCount: 0,
-    });
 
     const keywordSuffix = useDateRange ? ` (${searchStartDate}~${searchEndDate})` : '';
     const keywordWithGallery = useGallerySearch
@@ -477,94 +457,214 @@ export default function App() {
       : useDateRange
         ? '검색어+기간'
         : '검색어';
-    const logContext: CrawlLogContext = {
-      keyword: keywordWithGallery,
-      inputMode,
-    };
+
+    lastSearchKeywordRef.current = query;
+    await runSearchCrawl({
+      query,
+      useDateRange,
+      galleryId,
+      galleryLabel,
+      useGallerySearch,
+      logContext: {
+        keyword: keywordWithGallery,
+        inputMode,
+      },
+      clearSearchInput: true,
+      clearSearchDates: true,
+      clearSearchGallery: true,
+    });
+  };
+
+  const runSearchCrawl = async (options: {
+    query: string;
+    useDateRange: boolean;
+    galleryId?: string;
+    galleryLabel?: string;
+    useGallerySearch: boolean;
+    logContext: CrawlLogContext;
+    clearSearchInput?: boolean;
+    clearSearchDates?: boolean;
+    clearSearchGallery?: boolean;
+  }) => {
+    const abortSignal = beginCrawlSession();
+
+    crawlStartAtRef.current = Date.now();
+    setElapsedMs(0);
+    setLoading(true);
+    setError(null);
+    setInfoMessage(null);
+    setErrors([]);
+    setProgress({
+      completed: 0,
+      total: 0,
+      currentUrl: options.useGallerySearch
+        ? options.useDateRange
+          ? `갤러리 ${options.galleryLabel} 검색·수집 중…`
+          : `갤러리 ${options.galleryLabel} 검색·수집 중…`
+        : options.useDateRange
+          ? '기간 내 검색·수집 중…'
+          : '검색·수집 중…',
+      stage: 'search',
+      successCount: 0,
+      failCount: 0,
+    });
+
+    const batchErrors: { url: string; error: string }[] = [];
+    const batchTimings: UrlTiming[] = [];
+    const processedUrls = new Set<string>();
+    let successCount = 0;
+    let totalFailCount = 0;
+    let wasInterrupted = false;
+    let wasCancelled = false;
+    let interruptMessage: string | undefined;
+    let errorMessage: string | null = null;
+    let autoSaved = false;
+    let totalSavedCount = 0;
+    let persistSession: CrawlPersistSession | null = null;
 
     try {
-      lastSearchKeywordRef.current = query;
-      const searchResult = await searchDcinsideAllTerms(
-        query,
+      const response = await searchCrawlDcinsideStream(
+        options.query,
         {
           maxResults: 100,
-          startDate: useDateRange ? searchStartDate : undefined,
-          endDate: useDateRange ? searchEndDate : undefined,
-          galleryId: useGallerySearch ? galleryId : undefined,
+          startDate: options.useDateRange ? searchStartDate : undefined,
+          endDate: options.useDateRange ? searchEndDate : undefined,
+          galleryId: options.useGallerySearch ? options.galleryId : undefined,
         },
-        ({ termIndex, termTotal, term, collectedUrlCount }) => {
+        savedResults.length + 1,
+        (event) => {
           setProgress({
-            completed: termIndex - 1,
-            total: termTotal,
-            currentUrl: `검색어 ${termIndex}/${termTotal}: "${term}" (수집 URL ${collectedUrlCount}건)`,
-            successCount: 0,
-            failCount: 0,
+            completed: event.completed,
+            total: event.total,
+            currentUrl: event.currentUrl,
+            stage: event.stage,
+            successCount: event.successCount,
+            failCount: event.failCount,
           });
+        },
+        async (post) => {
+          if (!saveDirectoryRef.current) {
+            return;
+          }
+          try {
+            const saved = await saveBatchResults(
+              persistSession,
+              [post],
+              saveDirectoryRef.current,
+              deriveCommunityName([post]),
+              lastSearchKeywordRef.current
+            );
+            persistSession = saved.session;
+            setSavedResults((prev) => mergeSavedResults(prev, saved.postsForExcel));
+            totalSavedCount += saved.postsForExcel.length;
+            autoSaved = true;
+          } catch (e) {
+            const saveMessage =
+              e instanceof Error ? e.message : '자동 저장 중 오류가 발생했습니다.';
+            errorMessage = errorMessage
+              ? `${errorMessage} (저장 실패: ${saveMessage})`
+              : `저장 실패: ${saveMessage}`;
+          }
         },
         abortSignal
       );
-      logContext.searchMs = searchResult.searchMs;
 
-      if (searchResult.urls.length === 0) {
-        const emptyMessage = useGallerySearch
-          ? useDateRange
-            ? `갤러리 ${galleryLabel}에서 지정한 기간에 해당하는 검색 결과가 없습니다.`
-            : `갤러리 ${galleryLabel}에서 검색 결과가 없습니다.`
-          : useDateRange
+      const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
+      collectProcessedUrls(response, processedUrls);
+      successCount += batchSuccess;
+      totalFailCount += response.failCount ?? response.errors.length;
+      wasInterrupted = Boolean(response.interrupted);
+      if (wasInterrupted) {
+        wasCancelled = true;
+      }
+      interruptMessage = response.interruptMessage;
+
+      setErrors(batchErrors);
+
+      const attemptedCount = response.attemptedCount ?? successCount + totalFailCount;
+      if (!wasInterrupted && attemptedCount === 0) {
+        const emptyMessage = options.useGallerySearch
+          ? options.useDateRange
+            ? `갤러리 ${options.galleryLabel}에서 지정한 기간에 해당하는 검색 결과가 없습니다.`
+            : `갤러리 ${options.galleryLabel}에서 검색 결과가 없습니다.`
+          : options.useDateRange
             ? '지정한 기간에 해당하는 검색 결과가 없습니다.'
             : '검색 결과가 없습니다.';
         setError(emptyMessage);
-        await saveCrawlLog(
-          saveDirectoryRef.current,
-          logContext,
-          0,
-          0,
-          [],
-          Date.now() - (crawlStartAtRef.current ?? Date.now()),
-          []
+      } else if (wasInterrupted) {
+        errorMessage = formatInterruptedMessage(
+          { data: [], errors: batchErrors, interrupted: true, interruptMessage },
+          autoSaved,
+          totalSavedCount
         );
-        setLoading(false);
-        setProgress(null);
-        return;
+      } else if (successCount === 0 && batchErrors.length > 0) {
+        errorMessage = '이번 요청의 모든 URL 처리에 실패했습니다.';
+      } else if (batchErrors.length > 0) {
+        errorMessage = `일부 URL 처리에 실패했습니다. (성공 ${successCount}건, 실패 ${batchErrors.length}건)`;
       }
-
-      await runCrawlForUrls(searchResult.urls, {
-        clearSearchInput: true,
-        clearSearchDates: true,
-        clearSearchGallery: true,
-        skipInit: true,
-        logContext,
-        galleryId: useGallerySearch ? galleryId : undefined,
-      });
     } catch (e) {
       if (isAbortError(e)) {
-        setError('크롤링이 취소됐습니다.');
-        setInfoMessage(null);
-        if (crawlStartAtRef.current !== null) {
-          setLastCrawlDurationMs(Date.now() - crawlStartAtRef.current);
-        }
-        setLoading(false);
-        setProgress(null);
-        crawlAbortRef.current = null;
-        return;
+        wasCancelled = true;
+        errorMessage = '크롤링이 취소됐습니다.';
+      } else {
+        errorMessage = resolveCrawlError(e);
+        batchErrors.push({ url: '(검색·크롤링)', error: errorMessage });
+        setErrors(batchErrors);
       }
-      const message = resolveCrawlError(e);
-      setError(message);
+    } finally {
+      if (wasCancelled) {
+        for (const error of batchErrors) {
+          processedUrls.add(error.url);
+        }
+        setErrors(batchErrors);
+      }
+
+      if (errorMessage) {
+        if (autoSaved && !wasInterrupted) {
+          errorMessage = appendAutoSaveNotice(errorMessage, totalSavedCount);
+        }
+        setError(errorMessage);
+        setInfoMessage(null);
+      } else if (autoSaved) {
+        setError(null);
+        setInfoMessage(
+          `크롤링이 완료됐습니다. ${totalSavedCount}건이 선택한 폴더에 저장됐습니다.`
+        );
+      } else {
+        setError(null);
+        setInfoMessage(null);
+      }
+
+      const totalMs =
+        crawlStartAtRef.current !== null ? Date.now() - crawlStartAtRef.current : 0;
+      if (crawlStartAtRef.current !== null) {
+        setLastCrawlDurationMs(totalMs);
+      }
       await saveCrawlLog(
         saveDirectoryRef.current,
-        logContext,
-        0,
-        0,
-        [{ url: '(검색)', error: message }],
-        Date.now() - (crawlStartAtRef.current ?? Date.now()),
-        []
+        options.logContext,
+        successCount + totalFailCount,
+        successCount,
+        batchErrors,
+        totalMs,
+        batchTimings
       );
-      if (crawlStartAtRef.current !== null) {
-        setLastCrawlDurationMs(Date.now() - crawlStartAtRef.current);
-      }
       setLoading(false);
       setProgress(null);
       crawlAbortRef.current = null;
+      if (options.clearSearchInput) {
+        setSearchInput('');
+      }
+      if (options.clearSearchDates) {
+        setSearchStartDate('');
+        setSearchEndDate('');
+      }
+      if (options.clearSearchGallery) {
+        setSearchGalleryName('');
+        setSelectedGallery(null);
+        setGalleryPickerOpen(false);
+        setGalleryCandidates([]);
+      }
     }
   };
 
@@ -795,7 +895,20 @@ export default function App() {
               100
           )
         )
-      : 0;
+      : progress
+        ? Math.min(
+            95,
+            progress.completed * 8 +
+              (STAGE_WEIGHTS[progress.stage ?? 'search'] ?? 0.05) * 100
+          )
+        : 0;
+
+  const progressLabel =
+    progress && progress.total > 0
+      ? `진행 ${Math.min(progress.completed + (loading ? 1 : 0), progress.total)} / ${progress.total}`
+      : progress
+        ? `처리 ${progress.completed}건${progress.successCount + progress.failCount > 0 ? ` (발견 ${Math.max(progress.completed, progress.successCount + progress.failCount)}건)` : ''}`
+        : '';
 
   const totalResultPages = Math.max(1, Math.ceil(savedResults.length / RESULTS_PAGE_SIZE));
   const paginatedResults = savedResults.slice(
@@ -840,9 +953,9 @@ export default function App() {
       <header className="app-header">
         <h1>범죄일람표 크롤러</h1>
         <p>
-          크롤링은 100건 단위로 진행되며, 각 배치가 끝날 때마다 선택한 폴더의 동일한 결과물 폴더에
-          엑셀·캡처가 자동 저장됩니다. 저장 버튼은 화면에 누적된 결과를 새 폴더에 다시 저장할 때
-          사용합니다.
+          검색 크롤링은 URL을 찾는 즉시 수집·캡처합니다. URL 직접 입력은 100건 단위로 진행되며, 각
+          배치가 끝날 때마다 선택한 폴더의 동일한 결과물 폴더에 엑셀·캡처가 자동 저장됩니다. 저장
+          버튼은 화면에 누적된 결과를 새 폴더에 다시 저장할 때 사용합니다.
         </p>
       </header>
 
@@ -1024,7 +1137,7 @@ export default function App() {
             <div className="progress-panel" aria-live="polite">
               <div className="progress-header">
                 <span className="progress-label">
-                  진행 {Math.min(progress.completed + (loading ? 1 : 0), progress.total)} / {progress.total}
+                  {progressLabel}
                   <span className="progress-percent"> ({progressPercent}%)</span>
                 </span>
                 <span className="progress-stats">
@@ -1038,11 +1151,13 @@ export default function App() {
                 />
               </div>
               <p className="progress-url">
-                {progress.completed < progress.total ? (
+                {progress.total === 0 || progress.completed < progress.total ? (
                   <>
                     <span className="progress-stage">{formatStageLabel(progress.stage)}</span>
                     {' · '}
-                    {shortenUrl(progress.currentUrl)}
+                    {progress.stage === 'search'
+                      ? progress.currentUrl
+                      : shortenUrl(progress.currentUrl)}
                   </>
                 ) : (
                   '완료'
