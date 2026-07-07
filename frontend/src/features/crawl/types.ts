@@ -41,9 +41,7 @@ export interface CrawlLogEntry {
   failCount: number;
   failureReasons: string;
   totalMs: number;
-  searchMs?: number;
   textCrawlMs?: number;
-  seleniumBootMs?: number;
   pageNavigateMs?: number;
   waitContentMs?: number;
   waitCommentsMs?: number;

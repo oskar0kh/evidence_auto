@@ -157,7 +157,6 @@ interface CrawlLogContext {
   searchDateRange?: string;
   galleryName?: string;
   inputMode: CrawlLogEntry['inputMode'];
-  searchMs?: number;
 }
 
 async function saveCrawlLog(
@@ -185,11 +184,9 @@ async function saveCrawlLog(
     failCount: Math.max(attemptedCount - successCount, errors.length),
     failureReasons: formatFailureReasons(errors),
     totalMs,
-    searchMs: context.searchMs,
     textCrawlMs:
       pickFirstStepMs(stepDetails, 'text-crawl') ??
       pickStepMs(stepDetails, 'fetch-page', 'parse-html', 'fetch-comments', 'build-result'),
-    seleniumBootMs: pickStepMs(stepDetails, 'create-driver'),
     pageNavigateMs: pickStepMs(stepDetails, 'page-navigate'),
     waitContentMs: pickStepMs(stepDetails, 'wait-gallview-head'),
     waitCommentsMs: pickStepMs(stepDetails, 'wait-comments'),
@@ -1111,7 +1108,7 @@ export default function App() {
                 disabled={loading || saving || savedResults.length === 0}
                 aria-busy={saving}
               >
-                <span className="btn-label">범죄일람표, 캡처화면 저장</span>
+                <span className="btn-label">범죄일람표, 캡처이미지 수동 저장</span>
                 {saving && <span className="btn-spinner" aria-hidden="true" />}
               </button>
               <button
