@@ -4,6 +4,7 @@ import java.util.List;
 
 public record CrawlRequest(
         List<String> urls,
-        Integer startSerial
+        Integer startSerial,
+        String galleryId
 ) {
 }

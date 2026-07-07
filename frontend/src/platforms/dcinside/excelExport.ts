@@ -188,7 +188,13 @@ function findRowIndexByUrl(sheet: ExcelJS.Worksheet, url: string): number | null
 
 function getNextDataRow(sheet: ExcelJS.Worksheet): number {
   const lastRow = sheet.lastRow?.number ?? DATA_START_ROW - 1;
-  return Math.max(lastRow + 1, DATA_START_ROW);
+  for (let rowIndex = lastRow; rowIndex >= DATA_START_ROW; rowIndex--) {
+    const serial = sheet.getRow(rowIndex).getCell(1).value;
+    if (serial != null && serial !== '') {
+      return rowIndex + 1;
+    }
+  }
+  return DATA_START_ROW;
 }
 
 function setupNewCrimeListSheet(workbook: ExcelJS.Workbook): ExcelJS.Worksheet {
@@ -333,8 +339,8 @@ async function writePostToSheet(
     const tlRow = rowIndex - 1;
     sheet.addImage(imageId, {
       tl: { col: tlCol, row: tlRow },
-      br: { col: tlCol + 1, row: tlRow + 1 },
-    } as ExcelJS.ImageRange);
+      ext: { width: thumbnail.width, height: thumbnail.height },
+    });
   }
 }
 

@@ -1,9 +1,9 @@
 import axios from 'axios';
 import { parseSseChunk } from '../../shared/lib/sse';
-import { parseSearchTerms } from '../../features/search/searchUtils';
+import { parseSearchTerms, filterUrlsByGalleryId } from '../../features/search/searchUtils';
 import type { CrawlProgressEvent, CrawlStreamResult, UrlTiming } from '../../features/crawl/types';
 import type { DcinsidePostData } from './types';
-import type { SearchOptions, SearchResponse } from '../../features/search/types';
+import type { GalleryLookupResponse, SearchOptions, SearchResponse } from '../../features/search/types';
 
 const searchApi = axios.create({
   baseURL: '/api',
@@ -19,7 +19,8 @@ export async function crawlDcinsideStream(
   startSerial: number | undefined,
   onProgress: (progress: CrawlProgressEvent) => void,
   onUrlResult?: (post: DcinsidePostData) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  galleryId?: string
 ): Promise<CrawlStreamResult> {
   const response = await fetch('/api/crawl/dcinside/stream', {
     method: 'POST',
@@ -30,6 +31,7 @@ export async function crawlDcinsideStream(
     body: JSON.stringify({
       urls,
       startSerial: startSerial ?? null,
+      galleryId: galleryId?.trim() || null,
     }),
     signal,
   });
@@ -168,7 +170,7 @@ async function searchDcinside(
   options: SearchOptions = {},
   signal?: AbortSignal
 ): Promise<SearchResponse> {
-  const { maxResults = 100, startDate, endDate } = options;
+  const { maxResults = 100, startDate, endDate, galleryId } = options;
   const { data } = await searchApi.post<SearchResponse>(
     '/search/dcinside',
     {
@@ -176,7 +178,20 @@ async function searchDcinside(
       maxResults,
       startDate: startDate ?? null,
       endDate: endDate ?? null,
+      galleryId: galleryId?.trim() || null,
     },
+    { signal }
+  );
+  return data;
+}
+
+export async function lookupDcinsideGalleries(
+  name: string,
+  signal?: AbortSignal
+): Promise<GalleryLookupResponse> {
+  const { data } = await searchApi.post<GalleryLookupResponse>(
+    '/search/dcinside/galleries',
+    { name: name.trim() },
     { signal }
   );
   return data;
@@ -218,16 +233,21 @@ export async function searchDcinsideAllTerms(
 
     const result = await searchDcinside(term, options, signal);
     totalSearchMs += result.searchMs ?? 0;
-    for (const url of result.urls) {
+    for (const url of filterUrlsByGalleryId(result.urls, options.galleryId)) {
       merged.add(url);
     }
   }
 
+  const galleryId = options.galleryId?.trim();
+  const mergedUrls = filterUrlsByGalleryId([...merged], galleryId);
+
   return {
-    urls: [...merged],
-    count: merged.size,
+    urls: mergedUrls,
+    count: mergedUrls.length,
     searchMs: totalSearchMs,
     dateRangeSearch: Boolean(options.startDate && options.endDate),
+    gallerySearch: Boolean(options.galleryId?.trim()),
+    galleryId: options.galleryId?.trim() || undefined,
     startDate: options.startDate,
     endDate: options.endDate,
   };

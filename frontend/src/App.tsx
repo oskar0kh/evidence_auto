@@ -1,6 +1,7 @@
 import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
-import { crawlDcinsideStream, searchDcinsideAllTerms } from './platforms/dcinside/api';
+import { crawlDcinsideStream, lookupDcinsideGalleries, searchDcinsideAllTerms } from './platforms/dcinside/api';
+import { filterUrlsByGalleryId } from './features/search/searchUtils';
 import {
   aggregateStepTimings,
   appendCrawlLogEntry,
@@ -19,6 +20,7 @@ import {
 import { CRAWL_BATCH_SIZE, RESULTS_PAGE_SIZE, chunkArray } from './features/crawl/constants';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './shared/lib/nativeFolderPicker';
 import type { CrawlLogEntry, CrawlStreamResult, UrlTiming } from './features/crawl/types';
+import type { GalleryCandidate } from './features/search/types';
 import type { DcinsidePostData } from './platforms/dcinside/types';
 import './app/App.css';
 
@@ -246,9 +248,28 @@ async function saveBatchResults(
   return { session: activeSession, postsForExcel };
 }
 
+function formatGalleryLabel(candidate: GalleryCandidate): string {
+  return `${candidate.name}(${candidate.id})`;
+}
+
+function formatGalleryTypeLabel(type: string): string {
+  if (type === 'mgallery') {
+    return '마이너';
+  }
+  if (type === 'mini') {
+    return '미니';
+  }
+  return '메인';
+}
+
 export default function App() {
   const [urlInput, setUrlInput] = useState('');
   const [searchInput, setSearchInput] = useState('');
+  const [searchGalleryName, setSearchGalleryName] = useState('');
+  const [selectedGallery, setSelectedGallery] = useState<GalleryCandidate | null>(null);
+  const [galleryCandidates, setGalleryCandidates] = useState<GalleryCandidate[]>([]);
+  const [galleryPickerOpen, setGalleryPickerOpen] = useState(false);
+  const [galleryResolving, setGalleryResolving] = useState(false);
   const [searchStartDate, setSearchStartDate] = useState('');
   const [searchEndDate, setSearchEndDate] = useState('');
   const saveDirectoryRef = useRef<FileSystemDirectoryHandle | null>(null);
@@ -342,6 +363,41 @@ export default function App() {
     });
   };
 
+  const handleGalleryNameChange = (value: string) => {
+    setSearchGalleryName(value);
+    setSelectedGallery(null);
+    setGalleryPickerOpen(false);
+    setGalleryCandidates([]);
+  };
+
+  const handleGalleryLookup = async () => {
+    const galleryName = searchGalleryName.trim();
+    if (!galleryName) {
+      setError('갤러리명을 입력해 주세요.');
+      return;
+    }
+
+    setError(null);
+    setInfoMessage(null);
+    setSelectedGallery(null);
+    setGalleryResolving(true);
+    try {
+      const lookup = await lookupDcinsideGalleries(galleryName);
+      if (lookup.galleries.length === 0) {
+        setGalleryPickerOpen(false);
+        setGalleryCandidates([]);
+        setError(`'${galleryName}'에 해당하는 갤러리를 찾을 수 없습니다.`);
+        return;
+      }
+      setGalleryCandidates(lookup.galleries);
+      setGalleryPickerOpen(true);
+    } catch (e) {
+      setError(resolveCrawlError(e));
+    } finally {
+      setGalleryResolving(false);
+    }
+  };
+
   const handleSearchCrawl = async () => {
     const query = searchInput.trim();
     if (!query) {
@@ -360,7 +416,33 @@ export default function App() {
       return;
     }
 
+    const galleryName = searchGalleryName.trim();
+    if (galleryName && !selectedGallery) {
+      setError('갤러리 찾기 버튼으로 갤러리를 선택해 주세요.');
+      return;
+    }
+
+    setError(null);
+    setInfoMessage(null);
+    await executeSearchCrawl(selectedGallery ?? undefined);
+  };
+
+  const handleGalleryPickerCancel = () => {
+    setGalleryPickerOpen(false);
+    setGalleryCandidates([]);
+  };
+
+  const handleGallerySelect = (candidate: GalleryCandidate) => {
+    setSelectedGallery(candidate);
+    setGalleryPickerOpen(false);
+  };
+
+  const executeSearchCrawl = async (gallery?: GalleryCandidate) => {
+    const query = searchInput.trim();
     const useDateRange = Boolean(searchStartDate && searchEndDate);
+    const galleryId = gallery?.id;
+    const galleryLabel = gallery ? formatGalleryLabel(gallery) : undefined;
+    const useGallerySearch = Boolean(galleryId);
     const abortSignal = beginCrawlSession();
 
     crawlStartAtRef.current = Date.now();
@@ -369,17 +451,35 @@ export default function App() {
     setError(null);
     setInfoMessage(null);
     setErrors([]);
+    const searchProgressLabel = useGallerySearch
+      ? useDateRange
+        ? `갤러리 ${galleryLabel} 기간 검색 중…`
+        : `갤러리 ${galleryLabel} 검색 중…`
+      : useDateRange
+        ? '기간 내 디시 통합검색 중…'
+        : '디시 통합검색 중…';
     setProgress({
       completed: 0,
       total: 1,
-      currentUrl: useDateRange ? '기간 내 디시 통합검색 중…' : '디시 통합검색 중…',
+      currentUrl: searchProgressLabel,
       successCount: 0,
       failCount: 0,
     });
 
+    const keywordSuffix = useDateRange ? ` (${searchStartDate}~${searchEndDate})` : '';
+    const keywordWithGallery = useGallerySearch
+      ? `${query} @${galleryLabel}${keywordSuffix}`
+      : `${query}${keywordSuffix}`;
+    const inputMode = useGallerySearch
+      ? useDateRange
+        ? '검색어+기간+갤러리'
+        : '검색어+갤러리'
+      : useDateRange
+        ? '검색어+기간'
+        : '검색어';
     const logContext: CrawlLogContext = {
-      keyword: useDateRange ? `${query} (${searchStartDate}~${searchEndDate})` : query,
-      inputMode: useDateRange ? '검색어+기간' : '검색어',
+      keyword: keywordWithGallery,
+      inputMode,
     };
 
     try {
@@ -390,6 +490,7 @@ export default function App() {
           maxResults: 100,
           startDate: useDateRange ? searchStartDate : undefined,
           endDate: useDateRange ? searchEndDate : undefined,
+          galleryId: useGallerySearch ? galleryId : undefined,
         },
         ({ termIndex, termTotal, term, collectedUrlCount }) => {
           setProgress({
@@ -405,7 +506,14 @@ export default function App() {
       logContext.searchMs = searchResult.searchMs;
 
       if (searchResult.urls.length === 0) {
-        setError(useDateRange ? '지정한 기간에 해당하는 검색 결과가 없습니다.' : '검색 결과가 없습니다.');
+        const emptyMessage = useGallerySearch
+          ? useDateRange
+            ? `갤러리 ${galleryLabel}에서 지정한 기간에 해당하는 검색 결과가 없습니다.`
+            : `갤러리 ${galleryLabel}에서 검색 결과가 없습니다.`
+          : useDateRange
+            ? '지정한 기간에 해당하는 검색 결과가 없습니다.'
+            : '검색 결과가 없습니다.';
+        setError(emptyMessage);
         await saveCrawlLog(
           saveDirectoryRef.current,
           logContext,
@@ -423,8 +531,10 @@ export default function App() {
       await runCrawlForUrls(searchResult.urls, {
         clearSearchInput: true,
         clearSearchDates: true,
+        clearSearchGallery: true,
         skipInit: true,
         logContext,
+        galleryId: useGallerySearch ? galleryId : undefined,
       });
     } catch (e) {
       if (isAbortError(e)) {
@@ -464,10 +574,20 @@ export default function App() {
       clearUrlInput?: boolean;
       clearSearchInput?: boolean;
       clearSearchDates?: boolean;
+      clearSearchGallery?: boolean;
       skipInit?: boolean;
       logContext?: CrawlLogContext;
+      galleryId?: string;
     }
   ) => {
+    const crawlUrls = filterUrlsByGalleryId(urls, options?.galleryId);
+    if (options?.galleryId?.trim() && crawlUrls.length === 0 && urls.length > 0) {
+      setError('선택한 갤러리에 해당하는 URL이 없습니다.');
+      setLoading(false);
+      setProgress(null);
+      return;
+    }
+
     if (!options?.skipInit) {
       crawlStartAtRef.current = Date.now();
       setElapsedMs(0);
@@ -497,14 +617,14 @@ export default function App() {
       inputMode: 'URL 직접입력',
     };
 
-    const urlBatches = chunkArray(urls, CRAWL_BATCH_SIZE);
+    const urlBatches = chunkArray(crawlUrls, CRAWL_BATCH_SIZE);
     let nextSerial = savedResults.length + 1;
     let globalCompletedOffset = 0;
 
     setProgress({
       completed: 0,
-      total: urls.length,
-      currentUrl: urls[0] ?? '',
+      total: crawlUrls.length,
+      currentUrl: crawlUrls[0] ?? '',
       stage: 'text-crawl',
       successCount: 0,
       failCount: 0,
@@ -521,7 +641,7 @@ export default function App() {
           (event) => {
             setProgress({
               completed: globalCompletedOffset + event.completed,
-              total: urls.length,
+              total: crawlUrls.length,
               currentUrl: event.currentUrl,
               stage: event.stage,
               successCount: successCount + event.successCount,
@@ -531,7 +651,8 @@ export default function App() {
           (post) => {
             batchResults = mergeSavedResults(batchResults, [post]);
           },
-          abortSignal
+          abortSignal,
+          options?.galleryId
         );
 
         const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
@@ -597,7 +718,7 @@ export default function App() {
       }
     } finally {
       if (wasCancelled) {
-        appendUserCancelErrors(urls, batchErrors, processedUrls);
+        appendUserCancelErrors(crawlUrls, batchErrors, processedUrls);
         setErrors(batchErrors);
       }
 
@@ -625,7 +746,7 @@ export default function App() {
       await saveCrawlLog(
         saveDirectoryRef.current,
         logContext,
-        urls.length,
+        crawlUrls.length,
         successCount,
         batchErrors,
         totalMs,
@@ -643,6 +764,12 @@ export default function App() {
       if (options?.clearSearchDates) {
         setSearchStartDate('');
         setSearchEndDate('');
+      }
+      if (options?.clearSearchGallery) {
+        setSearchGalleryName('');
+        setSelectedGallery(null);
+        setGalleryPickerOpen(false);
+        setGalleryCandidates([]);
       }
     }
   };
@@ -732,16 +859,76 @@ export default function App() {
             disabled={loading}
           />
 
-          <label htmlFor="search-input">통합검색어 (쉼표·공백으로 OR 검색)</label>
-          <input
-            id="search-input"
-            className="search-input"
-            type="text"
-            placeholder="예: 사기, 피해 또는 사기 피해 (각 검색어 결과를 합쳐 수집)"
-            value={searchInput}
-            onChange={(e) => setSearchInput(e.target.value)}
-            disabled={loading}
-          />
+          <div className="search-row">
+            <div className="search-row-main">
+              <label htmlFor="search-input">통합검색어 (쉼표·공백으로 OR 검색)</label>
+              <input
+                id="search-input"
+                className="search-input"
+                type="text"
+                placeholder="예: 사기, 피해 또는 사기 피해 (각 검색어 결과를 합쳐 수집)"
+                value={searchInput}
+                onChange={(e) => setSearchInput(e.target.value)}
+                disabled={loading}
+              />
+            </div>
+            <div className="search-row-gallery">
+              <label htmlFor="search-gallery">갤러리 (선택)</label>
+              <div className="gallery-lookup-row">
+                <input
+                  id="search-gallery"
+                  className="gallery-input"
+                  type="text"
+                  placeholder="예: 포스트락"
+                  value={searchGalleryName}
+                  onChange={(e) => handleGalleryNameChange(e.target.value)}
+                  disabled={loading || galleryResolving}
+                />
+                <button
+                  type="button"
+                  className="btn secondary gallery-find-btn"
+                  onClick={() => void handleGalleryLookup()}
+                  disabled={loading || galleryResolving || !searchGalleryName.trim()}
+                >
+                  {galleryResolving ? '찾는 중…' : '찾기'}
+                </button>
+              </div>
+              <p className="gallery-selected-hint">
+                {selectedGallery ? `선택됨: ${formatGalleryLabel(selectedGallery)}` : ''}
+              </p>
+            </div>
+          </div>
+
+          {galleryPickerOpen && galleryCandidates.length > 0 && (
+            <div className="gallery-picker" role="dialog" aria-label="갤러리 선택">
+              <p className="gallery-picker-title">
+                '{searchGalleryName}' 검색 결과 {galleryCandidates.length}건 — 갤러리를 선택하세요.
+              </p>
+              <ul className="gallery-picker-list">
+                {galleryCandidates.map((candidate) => (
+                  <li key={candidate.id}>
+                    <button
+                      type="button"
+                      className={`gallery-picker-item${
+                        selectedGallery?.id === candidate.id ? ' selected' : ''
+                      }`}
+                      onClick={() => handleGallerySelect(candidate)}
+                    >
+                      <span className="gallery-picker-label">{formatGalleryLabel(candidate)}</span>
+                      <span className="gallery-picker-type">{formatGalleryTypeLabel(candidate.type)}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+              <button
+                type="button"
+                className="btn secondary gallery-picker-cancel"
+                onClick={handleGalleryPickerCancel}
+              >
+                닫기
+              </button>
+            </div>
+          )}
 
           <label htmlFor="search-start-date">검색 기간 (선택, yyyy-mm-dd)</label>
           <DateRangeInput
@@ -753,9 +940,10 @@ export default function App() {
           />
           <p className="field-hint search-hint">
             URL 입력과 검색어 입력은 별도입니다. 검색어를 쉼표(,)나 공백으로 나누면 OR 조건으로 각각
-            검색한 뒤 결과 URL을 합칩니다. 기간을 지정하지 않으면 검색어당 최대 100건(최신순)까지
-            수집합니다. 기간을 지정하면 검색어당 해당 기간의 결과를 페이지 단위로 모두 수집한 뒤
-            100건씩 배치로 크롤링·저장합니다.
+            검색한 뒤 결과 URL을 합칩니다. 갤러리명을 입력한 뒤 찾기 버튼으로 갤러리를 선택하면
+            해당 갤러리 내에서만 검색합니다. 갤러리를 비우면 전체 통합검색입니다. 기간을
+            지정하지 않으면 검색어당 최대 100건(최신순)까지 수집합니다. 기간을 지정하면 검색어당
+            해당 기간의 결과를 페이지 단위로 모두 수집한 뒤 100건씩 배치로 크롤링·저장합니다.
           </p>
 
           <label htmlFor="save-directory">저장 폴더 (캡처·엑셀)</label>
@@ -902,6 +1090,10 @@ export default function App() {
                     <span className="result-serial">{resultStartIndex + index + 1}.</span> {post.title}
                   </h3>
                   <dl>
+                    <div>
+                      <dt>갤러리명</dt>
+                      <dd>{post.galleryName?.trim() || '-'}</dd>
+                    </div>
                     <div>
                       <dt>닉네임</dt>
                       <dd>{post.nickname}</dd>

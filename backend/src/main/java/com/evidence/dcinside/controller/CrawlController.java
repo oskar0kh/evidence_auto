@@ -3,6 +3,7 @@ package com.evidence.dcinside.controller;
 import com.evidence.dcinside.dto.CrawlRequest;
 import com.evidence.dcinside.dto.DcinsidePostData;
 import com.evidence.dcinside.service.DcinsideCrawlService;
+import com.evidence.dcinside.service.DcinsideSearchService;
 import com.evidence.dcinside.service.ScreenshotService;
 import com.evidence.dto.CaptureImage;
 import com.evidence.dto.CrawlProgressEvent;
@@ -82,6 +83,9 @@ public class CrawlController {
                 .map(url -> url == null ? "" : url.trim())
                 .filter(url -> !url.isEmpty())
                 .toList();
+        if (DcinsideSearchService.hasGalleryId(request.galleryId())) {
+            validUrls = DcinsideSearchService.filterUrlsByGalleryId(validUrls, request.galleryId());
+        }
 
         int total = validUrls.size();
         int completed = 0;

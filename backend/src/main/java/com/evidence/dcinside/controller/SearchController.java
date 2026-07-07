@@ -1,5 +1,7 @@
 package com.evidence.dcinside.controller;
 
+import com.evidence.dcinside.dto.GalleryCandidate;
+import com.evidence.dcinside.dto.GalleryLookupRequest;
 import com.evidence.dcinside.dto.SearchRequest;
 import com.evidence.dcinside.service.DcinsideSearchService;
 import org.slf4j.Logger;
@@ -35,7 +37,21 @@ public class SearchController {
         try {
             List<String> urls;
             boolean dateRangeSearch = hasDateRange(request);
-            if (dateRangeSearch) {
+            boolean gallerySearch = DcinsideSearchService.hasGalleryId(request.galleryId());
+            if (gallerySearch) {
+                if (dateRangeSearch) {
+                    LocalDate startDate = DcinsideSearchService.parseRequestDate(request.startDate());
+                    LocalDate endDate = DcinsideSearchService.parseRequestDate(request.endDate());
+                    urls = searchService.searchGalleryByDateRange(
+                            request.query(),
+                            request.galleryId(),
+                            startDate,
+                            endDate
+                    );
+                } else {
+                    urls = searchService.searchGallery(request.query(), request.galleryId(), request.maxResults());
+                }
+            } else if (dateRangeSearch) {
                 LocalDate startDate = DcinsideSearchService.parseRequestDate(request.startDate());
                 LocalDate endDate = DcinsideSearchService.parseRequestDate(request.endDate());
                 urls = searchService.searchIntegratedByDateRange(request.query(), startDate, endDate);
@@ -49,6 +65,10 @@ public class SearchController {
             body.put("count", urls.size());
             body.put("searchMs", searchMs);
             body.put("dateRangeSearch", dateRangeSearch);
+            body.put("gallerySearch", gallerySearch);
+            if (gallerySearch) {
+                body.put("galleryId", DcinsideSearchService.normalizeGalleryId(request.galleryId()));
+            }
             if (dateRangeSearch) {
                 body.put("startDate", request.startDate());
                 body.put("endDate", request.endDate());
@@ -58,6 +78,27 @@ public class SearchController {
             return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
         } catch (Exception e) {
             log.warn("Search failed for query '{}': {}", request.query(), e.getMessage());
+            return ResponseEntity.internalServerError().body(Map.of(
+                    "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
+            ));
+        }
+    }
+
+    @PostMapping("/dcinside/galleries")
+    public ResponseEntity<?> lookupGalleries(@RequestBody GalleryLookupRequest request) {
+        long searchStartNanos = System.nanoTime();
+        try {
+            List<GalleryCandidate> galleries = searchService.searchGalleriesByName(request.name());
+            long searchMs = (System.nanoTime() - searchStartNanos) / 1_000_000;
+            Map<String, Object> body = new LinkedHashMap<>();
+            body.put("galleries", galleries);
+            body.put("count", galleries.size());
+            body.put("searchMs", searchMs);
+            return ResponseEntity.ok(body);
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("error", e.getMessage()));
+        } catch (Exception e) {
+            log.warn("Gallery lookup failed for name '{}': {}", request.name(), e.getMessage());
             return ResponseEntity.internalServerError().body(Map.of(
                     "error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
             ));

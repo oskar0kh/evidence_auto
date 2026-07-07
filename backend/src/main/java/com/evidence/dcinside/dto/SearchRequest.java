@@ -4,6 +4,7 @@ public record SearchRequest(
         String query,
         Integer maxResults,
         String startDate,
-        String endDate
+        String endDate,
+        String galleryId
 ) {
 }

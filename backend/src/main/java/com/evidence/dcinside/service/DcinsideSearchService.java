@@ -1,5 +1,6 @@
 package com.evidence.dcinside.service;
 
+import com.evidence.dcinside.dto.GalleryCandidate;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
@@ -16,9 +17,11 @@ import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @Service
@@ -39,6 +42,9 @@ public class DcinsideSearchService {
     private static final Pattern POST_URL_PATTERN = Pattern.compile(
             "https?://(?:m\\.)?gall\\.dcinside\\.com/(?:mgallery/board|mini/board|board)/view/\\?.*"
     );
+    private static final Pattern GALLERY_ID_FROM_URL_PATTERN =
+            Pattern.compile("[?&]id=([^&\\s]+)", Pattern.CASE_INSENSITIVE);
+    private static final Pattern GALLERY_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_\\-]+$");
 
     private final HttpClient httpClient = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL)
@@ -80,6 +86,165 @@ public class DcinsideSearchService {
         return new ArrayList<>(collected);
     }
 
+    public List<String> searchGallery(String query, String galleryId, Integer maxResults) throws Exception {
+        String normalizedGalleryId = normalizeGalleryId(galleryId);
+        List<String> terms = parseSearchTerms(query);
+        Set<String> collected = new LinkedHashSet<>();
+
+        for (int i = 0; i < terms.size(); i++) {
+            collected.addAll(searchSingle(terms.get(i), maxResults, normalizedGalleryId));
+            if (i < terms.size() - 1) {
+                Thread.sleep(TERM_SEARCH_DELAY_MS);
+            }
+        }
+
+        return filterUrlsByGalleryId(new ArrayList<>(collected), normalizedGalleryId);
+    }
+
+    public List<String> searchGalleryByDateRange(
+            String query,
+            String galleryId,
+            LocalDate startDate,
+            LocalDate endDate
+    ) throws Exception {
+        if (startDate == null || endDate == null) {
+            throw new IllegalArgumentException("검색 기간의 시작일과 종료일을 모두 입력해 주세요.");
+        }
+        if (startDate.isAfter(endDate)) {
+            throw new IllegalArgumentException("검색 기간의 시작일은 종료일보다 이후일 수 없습니다.");
+        }
+
+        String normalizedGalleryId = normalizeGalleryId(galleryId);
+        List<String> terms = parseSearchTerms(query);
+        Set<String> collected = new LinkedHashSet<>();
+
+        for (int i = 0; i < terms.size(); i++) {
+            collected.addAll(searchByDateRangeSingle(terms.get(i), startDate, endDate, normalizedGalleryId));
+            if (i < terms.size() - 1) {
+                Thread.sleep(TERM_SEARCH_DELAY_MS);
+            }
+        }
+
+        return filterUrlsByGalleryId(new ArrayList<>(collected), normalizedGalleryId);
+    }
+
+    public List<GalleryCandidate> searchGalleriesByName(String galleryName) throws Exception {
+        if (galleryName == null || galleryName.isBlank()) {
+            throw new IllegalArgumentException("갤러리명을 입력해 주세요.");
+        }
+
+        String trimmedName = galleryName.trim();
+        String encodedName = URLEncoder.encode(trimmedName, StandardCharsets.UTF_8);
+        String searchUrl = "https://search.dcinside.com/gallery/q/" + encodedName;
+        Document doc = fetchDocument(httpClient, searchUrl);
+
+        LinkedHashMap<String, GalleryCandidate> collected = new LinkedHashMap<>();
+        appendGalleryCandidates(doc.select("div.gallsch_result_all a.gallname_txt"), collected);
+        appendGalleryCandidates(doc.select("div.integrate_recom a.gallname_txt"), collected);
+
+        return new ArrayList<>(collected.values());
+    }
+
+    private void appendGalleryCandidates(Elements links, LinkedHashMap<String, GalleryCandidate> collected) {
+        for (Element link : links) {
+            String href = link.attr("href").trim();
+            if (href.isEmpty()) {
+                continue;
+            }
+
+            Matcher matcher = GALLERY_ID_FROM_URL_PATTERN.matcher(href);
+            if (!matcher.find()) {
+                continue;
+            }
+
+            String galleryId = matcher.group(1).trim();
+            if (galleryId.isEmpty() || !GALLERY_ID_PATTERN.matcher(galleryId).matches()) {
+                continue;
+            }
+
+            String name = extractGalleryName(link);
+            if (name.isEmpty()) {
+                continue;
+            }
+
+            collected.putIfAbsent(
+                    galleryId,
+                    new GalleryCandidate(name, galleryId, parseGalleryTypeFromUrl(href))
+            );
+        }
+    }
+
+    private String extractGalleryName(Element link) {
+        Element clone = link.clone();
+        clone.select("em").remove();
+        return clone.text().trim();
+    }
+
+    private String parseGalleryTypeFromUrl(String href) {
+        if (href.contains("/mgallery/")) {
+            return "mgallery";
+        }
+        if (href.contains("/mini/")) {
+            return "mini";
+        }
+        return "main";
+    }
+
+    public static String normalizeGalleryId(String galleryId) {
+        if (galleryId == null || galleryId.isBlank()) {
+            throw new IllegalArgumentException("갤러리 ID를 입력해 주세요.");
+        }
+
+        String trimmed = galleryId.trim();
+        Matcher matcher = GALLERY_ID_FROM_URL_PATTERN.matcher(trimmed);
+        if (matcher.find()) {
+            trimmed = matcher.group(1).trim();
+        }
+
+        if (trimmed.isEmpty() || !GALLERY_ID_PATTERN.matcher(trimmed).matches()) {
+            throw new IllegalArgumentException("갤러리 ID 형식이 올바르지 않습니다. 예: programming");
+        }
+        return trimmed;
+    }
+
+    public static boolean hasGalleryId(String galleryId) {
+        return galleryId != null && !galleryId.isBlank();
+    }
+
+    public static String extractGalleryIdFromUrl(String url) {
+        if (url == null || url.isBlank()) {
+            return "";
+        }
+        Matcher matcher = GALLERY_ID_FROM_URL_PATTERN.matcher(url);
+        if (matcher.find()) {
+            return matcher.group(1).trim();
+        }
+        return "";
+    }
+
+    public static boolean matchesGalleryId(String url, String galleryId) {
+        if (!hasGalleryId(galleryId)) {
+            return true;
+        }
+        String normalizedGalleryId = normalizeGalleryId(galleryId);
+        String urlGalleryId = extractGalleryIdFromUrl(url);
+        return !urlGalleryId.isEmpty() && normalizedGalleryId.equals(urlGalleryId);
+    }
+
+    public static List<String> filterUrlsByGalleryId(List<String> urls, String galleryId) {
+        if (!hasGalleryId(galleryId)) {
+            return urls;
+        }
+        String normalizedGalleryId = normalizeGalleryId(galleryId);
+        List<String> filtered = new ArrayList<>();
+        for (String url : urls) {
+            if (matchesGalleryId(url, normalizedGalleryId)) {
+                filtered.add(url);
+            }
+        }
+        return filtered;
+    }
+
     public static List<String> parseSearchTerms(String query) {
         if (query == null || query.isBlank()) {
             throw new IllegalArgumentException("검색어를 입력해 주세요.");
@@ -112,12 +277,21 @@ public class DcinsideSearchService {
     }
 
     private List<String> searchIntegratedSingle(String term, Integer maxResults) throws Exception {
+        return searchSingle(term, maxResults, null);
+    }
+
+    private List<String> searchIntegratedByDateRangeSingle(String term, LocalDate startDate, LocalDate endDate)
+            throws Exception {
+        return searchByDateRangeSingle(term, startDate, endDate, null);
+    }
+
+    private List<String> searchSingle(String term, Integer maxResults, String galleryId) throws Exception {
         int limit = maxResults == null || maxResults <= 0 ? DEFAULT_MAX_RESULTS : Math.min(maxResults, DEFAULT_MAX_RESULTS);
         String encodedQuery = URLEncoder.encode(term, StandardCharsets.UTF_8);
 
         Set<String> collected = new LinkedHashSet<>();
         for (int page = 1; page <= MAX_PAGE_LIMIT && collected.size() < limit; page++) {
-            String searchUrl = "https://search.dcinside.com/post/p/" + page + "/q/" + encodedQuery;
+            String searchUrl = buildSearchUrl(page, encodedQuery, galleryId);
             Document doc = fetchDocument(httpClient, searchUrl);
             List<SearchResultItem> pageResults = extractPageResults(doc);
             if (pageResults.isEmpty()) {
@@ -125,6 +299,9 @@ public class DcinsideSearchService {
             }
 
             for (SearchResultItem item : pageResults) {
+                if (!matchesGalleryId(item.url(), galleryId)) {
+                    continue;
+                }
                 collected.add(item.url());
                 if (collected.size() >= limit) {
                     break;
@@ -139,15 +316,19 @@ public class DcinsideSearchService {
         return new ArrayList<>(collected);
     }
 
-    private List<String> searchIntegratedByDateRangeSingle(String term, LocalDate startDate, LocalDate endDate)
-            throws Exception {
+    private List<String> searchByDateRangeSingle(
+            String term,
+            LocalDate startDate,
+            LocalDate endDate,
+            String galleryId
+    ) throws Exception {
         String encodedQuery = URLEncoder.encode(term, StandardCharsets.UTF_8);
 
         Set<String> collected = new LinkedHashSet<>();
         boolean reachedOlderThanRange = false;
 
         for (int page = 1; page <= MAX_DATE_RANGE_PAGE_LIMIT && !reachedOlderThanRange; page++) {
-            String searchUrl = "https://search.dcinside.com/post/p/" + page + "/q/" + encodedQuery;
+            String searchUrl = buildSearchUrl(page, encodedQuery, galleryId);
             Document doc = fetchDocument(httpClient, searchUrl);
             List<SearchResultItem> pageResults = extractPageResults(doc);
             if (pageResults.isEmpty()) {
@@ -155,6 +336,9 @@ public class DcinsideSearchService {
             }
 
             for (SearchResultItem item : pageResults) {
+                if (!matchesGalleryId(item.url(), galleryId)) {
+                    continue;
+                }
                 LocalDate postDate = item.postDate();
                 if (postDate == null) {
                     continue;
@@ -175,6 +359,14 @@ public class DcinsideSearchService {
         }
 
         return new ArrayList<>(collected);
+    }
+
+    private String buildSearchUrl(int page, String encodedQuery, String galleryId) {
+        String url = "https://search.dcinside.com/post/p/" + page + "/q/" + encodedQuery;
+        if (galleryId != null && !galleryId.isBlank()) {
+            url += "/gallery/" + galleryId;
+        }
+        return url;
     }
 
     private Document fetchDocument(HttpClient client, String url) throws Exception {
