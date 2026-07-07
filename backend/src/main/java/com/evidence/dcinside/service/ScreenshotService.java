@@ -51,6 +51,8 @@ public class ScreenshotService {
     private static final int MAX_STITCHED_HEIGHT = 50000;
     private static final int MAX_COMMENT_PAGES = 20;
     private static final int MAX_CAPTURE_ATTEMPTS = 2;
+    private static final int CAPTURE_SIDE_PADDING = 48;
+    private static final int CAPTURE_TOP_EXTRA_PADDING = 220;
 
     private final String configuredChromeBinary;
     private final long commentWaitMs;
@@ -437,6 +439,7 @@ public class ScreenshotService {
         Map<String, Object> clip = (Map<String, Object>) ((JavascriptExecutor) driver).executeScript(
                 """
                 const postNo = arguments[0];
+                const sidePadding = arguments[1];
                 const commentBox = document.querySelector('#comment_wrap_' + postNo + ' .comment_box');
                 const cmtPaging = document.querySelector('#comment_wrap_' + postNo + ' .cmt_paging');
                 if (!commentBox) return null;
@@ -444,6 +447,10 @@ public class ScreenshotService {
                 const scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
                 const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
                 const boxRect = commentBox.getBoundingClientRect();
+                const viewportWidth = Math.max(
+                  document.documentElement.clientWidth || 0,
+                  window.innerWidth || 0
+                );
 
                 let maxBottom = boxRect.bottom + scrollY;
                 if (cmtPaging) {
@@ -452,15 +459,22 @@ public class ScreenshotService {
                 }
 
                 const top = boxRect.top + scrollY;
+                const left = Math.max(0, Math.floor(boxRect.left + scrollX - sidePadding));
+                const rightLimit = Math.max(left + 1, Math.ceil(viewportWidth + scrollX));
+                const right = Math.min(
+                  rightLimit,
+                  Math.ceil(boxRect.right + scrollX + sidePadding)
+                );
                 return {
-                  x: Math.max(0, Math.floor(boxRect.left + scrollX)),
+                  x: left,
                   y: Math.max(0, Math.floor(top)),
-                  width: Math.max(1, Math.ceil(boxRect.width)),
+                  width: Math.max(1, right - left),
                   height: Math.max(1, Math.ceil(maxBottom - top)),
                   scale: 1
                 };
                 """,
-                postNo
+                postNo,
+                CAPTURE_SIDE_PADDING
         );
         if (clip == null) {
             throw new IllegalStateException("댓글 캡처 영역(.comment_box ~ .cmt_paging)을 찾을 수 없습니다.");
@@ -518,12 +532,18 @@ public class ScreenshotService {
                 """
                 const article = arguments[0];
                 const postNo = arguments[1];
+                const sidePadding = arguments[2];
+                const topExtraPadding = arguments[3];
                 const scrollX = window.pageXOffset || document.documentElement.scrollLeft || 0;
                 const scrollY = window.pageYOffset || document.documentElement.scrollTop || 0;
                 let minTop = Infinity;
                 let minLeft = Infinity;
                 let maxBottom = 0;
                 let maxRight = 0;
+                const viewportWidth = Math.max(
+                  document.documentElement.clientWidth || 0,
+                  window.innerWidth || 0
+                );
 
                 function include(el) {
                   if (!el) return;
@@ -548,6 +568,32 @@ public class ScreenshotService {
                   return null;
                 }
 
+                const head = article.querySelector('.gallview_head');
+                const pageHeadCandidates = [
+                  '.minor_top',
+                  '.page_head',
+                  '.visit_bookmark',
+                  '.gall_issuebox'
+                ];
+                if (head) {
+                  const headTop = head.getBoundingClientRect().top + scrollY;
+                  pageHeadCandidates.forEach((selector) => {
+                    document.querySelectorAll(selector).forEach((el) => {
+                      const rect = el.getBoundingClientRect();
+                      const top = rect.top + scrollY;
+                      const bottom = rect.bottom + scrollY;
+                      if (rect.width > 0 && rect.height > 0 && bottom <= headTop + 2) {
+                        include(el);
+                      }
+                    });
+                  });
+                }
+
+                minTop = Math.max(0, minTop - topExtraPadding);
+                minLeft = Math.max(0, minLeft - sidePadding);
+                const rightLimit = Math.max(minLeft + 1, Math.ceil(viewportWidth + scrollX));
+                maxRight = Math.min(rightLimit, maxRight + sidePadding);
+
                 return {
                   x: Math.max(0, Math.floor(minLeft)),
                   y: Math.max(0, Math.floor(minTop)),
@@ -557,7 +603,9 @@ public class ScreenshotService {
                 };
                 """,
                 captureTarget,
-                postNo
+                postNo,
+                CAPTURE_SIDE_PADDING,
+                CAPTURE_TOP_EXTRA_PADDING
         );
         if (clip == null) {
             throw new IllegalStateException("캡처 영역 좌표를 계산할 수 없습니다.");
