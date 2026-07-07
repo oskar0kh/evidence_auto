@@ -10,7 +10,13 @@ import {
   pickStepMs,
 } from './features/crawl/crawlLogExport';
 import DateRangeInput from './shared/ui/DateRangeInput';
-import { persistCrimeListAndCaptures } from './features/export/persistResults';
+import {
+  appendBatchToSession,
+  createCrawlPersistSession,
+  persistCrimeListAndCaptures,
+  type CrawlPersistSession,
+} from './features/export/persistResults';
+import { CRAWL_BATCH_SIZE, chunkArray } from './features/crawl/constants';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './shared/lib/nativeFolderPicker';
 import type { CrawlLogEntry, CrawlStreamResult, UrlTiming } from './features/crawl/types';
 import type { DcinsidePostData } from './platforms/dcinside/types';
@@ -168,7 +174,7 @@ function collectCrawlResponse(
   if (response.timings) {
     batchTimings.push(...response.timings);
   }
-  return response.data.length;
+  return response.successCount ?? response.data.length;
 }
 
 function formatInterruptedMessage(
@@ -188,6 +194,24 @@ function formatInterruptedMessage(
 
 function appendAutoSaveNotice(message: string, savedCount: number): string {
   return `${message} 완료된 ${savedCount}건은 선택한 폴더에 자동 저장됐습니다.`;
+}
+
+async function saveBatchResults(
+  session: CrawlPersistSession | null,
+  batchResults: DcinsidePostData[],
+  directory: FileSystemDirectoryHandle,
+  communityName: string,
+  keyword: string | undefined
+): Promise<{ session: CrawlPersistSession; postsForExcel: DcinsidePostData[] }> {
+  let activeSession = session;
+  if (!activeSession) {
+    activeSession = await createCrawlPersistSession(directory, {
+      communityName,
+      keyword,
+    });
+  }
+  const postsForExcel = await appendBatchToSession(activeSession, batchResults);
+  return { session: activeSession, postsForExcel };
 }
 
 export default function App() {
@@ -389,15 +413,21 @@ export default function App() {
 
     const batchErrors: { url: string; error: string }[] = [];
     const batchTimings: UrlTiming[] = [];
-    let batchResults: DcinsidePostData[] = [];
     let successCount = 0;
+    let totalFailCount = 0;
     let wasInterrupted = false;
-    let crawlThrew = false;
     let interruptMessage: string | undefined;
     let errorMessage: string | null = null;
+    let autoSaved = false;
+    let totalSavedCount = 0;
+    let persistSession: CrawlPersistSession | null = null;
     const logContext: CrawlLogContext = options?.logContext ?? {
       inputMode: 'URL 직접입력',
     };
+
+    const urlBatches = chunkArray(urls, CRAWL_BATCH_SIZE);
+    let nextSerial = savedResults.length + 1;
+    let globalCompletedOffset = 0;
 
     setProgress({
       completed: 0,
@@ -409,40 +439,71 @@ export default function App() {
     });
 
     try {
-      const startSerial = savedResults.length + 1;
-      const response = await crawlDcinsideStream(
-        urls,
-        startSerial,
-        (event) => {
-          setProgress({
-            completed: event.completed,
-            total: event.total,
-            currentUrl: event.currentUrl,
-            stage: event.stage,
-            successCount: event.successCount,
-            failCount: event.failCount,
-          });
-        },
-        (post) => {
-          batchResults = mergeSavedResults(batchResults, [post]);
-          setSavedResults((prev) => mergeSavedResults(prev, [post]));
-        }
-      );
+      for (let batchIndex = 0; batchIndex < urlBatches.length; batchIndex++) {
+        const batchUrls = urlBatches[batchIndex];
+        let batchResults: DcinsidePostData[] = [];
 
-      successCount = collectCrawlResponse(response, batchErrors, batchTimings);
-      if (response.data.length > 0) {
-        batchResults = mergeSavedResults(batchResults, response.data);
-        setSavedResults((prev) => mergeSavedResults(prev, response.data));
+        const response = await crawlDcinsideStream(
+          batchUrls,
+          nextSerial,
+          (event) => {
+            setProgress({
+              completed: globalCompletedOffset + event.completed,
+              total: urls.length,
+              currentUrl: event.currentUrl,
+              stage: event.stage,
+              successCount: successCount + event.successCount,
+              failCount: totalFailCount + event.failCount,
+            });
+          },
+          (post) => {
+            batchResults = mergeSavedResults(batchResults, [post]);
+          }
+        );
+
+        const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
+        successCount += batchSuccess;
+        totalFailCount += response.failCount ?? response.errors.length;
+        wasInterrupted = Boolean(response.interrupted);
+        interruptMessage = response.interruptMessage;
+
+        if (batchResults.length > 0 && saveDirectoryRef.current) {
+          try {
+            const saved = await saveBatchResults(
+              persistSession,
+              batchResults,
+              saveDirectoryRef.current,
+              deriveCommunityName(batchResults),
+              lastSearchKeywordRef.current
+            );
+            persistSession = saved.session;
+            setSavedResults((prev) => mergeSavedResults(prev, saved.postsForExcel));
+            totalSavedCount += saved.postsForExcel.length;
+            autoSaved = true;
+          } catch (e) {
+            const saveMessage =
+              e instanceof Error ? e.message : '배치 자동 저장 중 오류가 발생했습니다.';
+            errorMessage = errorMessage
+              ? `${errorMessage} (배치 ${batchIndex + 1} 저장 실패: ${saveMessage})`
+              : `배치 ${batchIndex + 1} 저장 실패: ${saveMessage}`;
+          }
+        }
+
+        batchResults = [];
+        nextSerial += batchSuccess;
+        globalCompletedOffset += batchUrls.length;
+
+        if (wasInterrupted) {
+          break;
+        }
       }
 
-      wasInterrupted = Boolean(response.interrupted);
-      interruptMessage = response.interruptMessage;
       setErrors(batchErrors);
-      if (response.interrupted) {
+      if (wasInterrupted) {
         errorMessage = formatInterruptedMessage(
-          { data: batchResults, errors: batchErrors, interrupted: true, interruptMessage },
-          false,
-          batchResults.length
+          { data: [], errors: batchErrors, interrupted: true, interruptMessage },
+          autoSaved,
+          totalSavedCount
         );
       } else if (successCount === 0 && batchErrors.length > 0) {
         errorMessage = '이번 요청의 모든 URL 처리에 실패했습니다.';
@@ -450,56 +511,19 @@ export default function App() {
         errorMessage = `일부 URL 처리에 실패했습니다. (성공 ${successCount}건, 실패 ${batchErrors.length}건)`;
       }
     } catch (e) {
-      crawlThrew = true;
       errorMessage = resolveCrawlError(e);
       batchErrors.push({ url: '(크롤링)', error: errorMessage });
     } finally {
-      let autoSaved = false;
-
-      if (batchResults.length > 0 && saveDirectoryRef.current) {
-        try {
-          const { postsForExcel } = await persistCrimeListAndCaptures(
-            saveDirectoryRef.current,
-            batchResults,
-            {
-              communityName: deriveCommunityName(batchResults),
-              keyword: lastSearchKeywordRef.current,
-            }
-          );
-          setSavedResults((prev) => mergeSavedResults(prev, postsForExcel));
-          autoSaved = true;
-        } catch (e) {
-          const saveMessage =
-            e instanceof Error ? e.message : '자동 저장 중 오류가 발생했습니다.';
-          errorMessage = errorMessage
-            ? `${errorMessage} (자동 저장 실패: ${saveMessage})`
-            : `자동 저장 실패: ${saveMessage}`;
-        }
-      }
-
       if (errorMessage) {
-        if (autoSaved) {
-          if (wasInterrupted) {
-            errorMessage = formatInterruptedMessage(
-              {
-                data: batchResults,
-                errors: batchErrors,
-                interrupted: true,
-                interruptMessage,
-              },
-              true,
-              batchResults.length
-            );
-          } else {
-            errorMessage = appendAutoSaveNotice(errorMessage, batchResults.length);
-          }
+        if (autoSaved && !wasInterrupted) {
+          errorMessage = appendAutoSaveNotice(errorMessage, totalSavedCount);
         }
         setError(errorMessage);
         setInfoMessage(null);
       } else if (autoSaved) {
         setError(null);
         setInfoMessage(
-          `크롤링이 완료됐습니다. ${batchResults.length}건이 선택한 폴더에 저장됐습니다.`
+          `크롤링이 완료됐습니다. ${totalSavedCount}건이 선택한 폴더에 저장됐습니다.`
         );
       } else {
         setError(null);
@@ -594,8 +618,9 @@ export default function App() {
       <header className="app-header">
         <h1>범죄일람표 크롤러</h1>
         <p>
-          크롤링이 끝나면 성공·오류 여부와 관계없이 완료된 건은 선택한 폴더에 자동 저장됩니다.
-          저장 버튼은 화면에 누적된 결과를 다시 저장할 때 사용합니다.
+          크롤링은 100건 단위로 진행되며, 각 배치가 끝날 때마다 선택한 폴더의 동일한 결과물 폴더에
+          엑셀·캡처가 자동 저장됩니다. 저장 버튼은 화면에 누적된 결과를 새 폴더에 다시 저장할 때
+          사용합니다.
         </p>
       </header>
 
@@ -635,7 +660,7 @@ export default function App() {
             URL 입력과 검색어 입력은 별도입니다. 검색어를 쉼표(,)나 공백으로 나누면 OR 조건으로 각각
             검색한 뒤 결과 URL을 합칩니다. 기간을 지정하지 않으면 검색어당 최대 100건(최신순)까지
             수집합니다. 기간을 지정하면 검색어당 해당 기간의 결과를 페이지 단위로 모두 수집한 뒤
-            100개씩 배치로 크롤링합니다.
+            100건씩 배치로 크롤링·저장합니다.
           </p>
 
           <label htmlFor="save-directory">저장 폴더 (캡처·엑셀)</label>

@@ -82,7 +82,17 @@ export async function crawlDcinsideStream(
     }
 
     if (message.event === 'complete') {
-      finalResult = JSON.parse(message.data) as CrawlStreamResult;
+      const summary = JSON.parse(message.data) as {
+        successCount: number;
+        failCount: number;
+        attemptedCount: number;
+      };
+      finalResult = {
+        ...accumulated,
+        successCount: summary.successCount,
+        failCount: summary.failCount,
+        attemptedCount: summary.attemptedCount,
+      };
       return;
     }
 

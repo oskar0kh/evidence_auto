@@ -18,7 +18,13 @@ export async function saveCapturesToDirectory(
   const screenshotDir = await getOrCreateSubdirectory(directory, SCREENSHOT_DIR);
 
   for (const post of posts) {
-    if (!post.captureImageBase64 || !post.captureFilePath) {
+    if (!post.captureImageBase64) {
+      if (!post.captureFilePath) {
+        throw new Error(`캡처 이미지가 없습니다: ${post.url}`);
+      }
+      continue;
+    }
+    if (!post.captureFilePath) {
       throw new Error(`캡처 이미지가 없습니다: ${post.url}`);
     }
     const filename = getCaptureFilename(post.captureFilePath);

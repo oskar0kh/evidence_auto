@@ -40,6 +40,10 @@ public class DcinsideSearchService {
             "https?://(?:m\\.)?gall\\.dcinside\\.com/(?:mgallery/board|mini/board|board)/view/\\?.*"
     );
 
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
+
     public List<String> searchIntegrated(String query, Integer maxResults) throws Exception {
         List<String> terms = parseSearchTerms(query);
         Set<String> collected = new LinkedHashSet<>();
@@ -111,14 +115,10 @@ public class DcinsideSearchService {
         int limit = maxResults == null || maxResults <= 0 ? DEFAULT_MAX_RESULTS : Math.min(maxResults, DEFAULT_MAX_RESULTS);
         String encodedQuery = URLEncoder.encode(term, StandardCharsets.UTF_8);
 
-        HttpClient client = HttpClient.newBuilder()
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
-
         Set<String> collected = new LinkedHashSet<>();
         for (int page = 1; page <= MAX_PAGE_LIMIT && collected.size() < limit; page++) {
             String searchUrl = "https://search.dcinside.com/post/p/" + page + "/q/" + encodedQuery;
-            Document doc = fetchDocument(client, searchUrl);
+            Document doc = fetchDocument(httpClient, searchUrl);
             List<SearchResultItem> pageResults = extractPageResults(doc);
             if (pageResults.isEmpty()) {
                 break;
@@ -142,16 +142,13 @@ public class DcinsideSearchService {
     private List<String> searchIntegratedByDateRangeSingle(String term, LocalDate startDate, LocalDate endDate)
             throws Exception {
         String encodedQuery = URLEncoder.encode(term, StandardCharsets.UTF_8);
-        HttpClient client = HttpClient.newBuilder()
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
 
         Set<String> collected = new LinkedHashSet<>();
         boolean reachedOlderThanRange = false;
 
         for (int page = 1; page <= MAX_DATE_RANGE_PAGE_LIMIT && !reachedOlderThanRange; page++) {
             String searchUrl = "https://search.dcinside.com/post/p/" + page + "/q/" + encodedQuery;
-            Document doc = fetchDocument(client, searchUrl);
+            Document doc = fetchDocument(httpClient, searchUrl);
             List<SearchResultItem> pageResults = extractPageResults(doc);
             if (pageResults.isEmpty()) {
                 break;

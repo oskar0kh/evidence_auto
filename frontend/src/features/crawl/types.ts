@@ -7,6 +7,9 @@ export interface CrawlResponse {
 }
 
 export interface CrawlStreamResult extends CrawlResponse {
+  successCount?: number;
+  failCount?: number;
+  attemptedCount?: number;
   interrupted?: boolean;
   interruptMessage?: string;
 }

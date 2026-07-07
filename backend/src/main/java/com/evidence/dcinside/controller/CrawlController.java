@@ -59,8 +59,8 @@ public class CrawlController {
         CompletableFuture.runAsync(() -> {
             try {
                 CrawlCallbacks callbacks = CrawlCallbacks.streaming(this, emitter);
-                CrawlResult result = crawlAllUrls(request, callbacks);
-                sendEvent(emitter, "complete", result.toBody());
+                CrawlSummary summary = crawlAllUrls(request, callbacks);
+                sendEvent(emitter, "complete", summary.toBody());
                 emitter.complete();
             } catch (Exception e) {
                 log.error("SSE crawl stream failed", e);
@@ -77,20 +77,17 @@ public class CrawlController {
         return emitter;
     }
 
-    private CrawlResult crawlAllUrls(CrawlRequest request, CrawlCallbacks callbacks) {
+    private CrawlSummary crawlAllUrls(CrawlRequest request, CrawlCallbacks callbacks) {
         List<String> validUrls = request.urls().stream()
                 .map(url -> url == null ? "" : url.trim())
                 .filter(url -> !url.isEmpty())
                 .toList();
 
-        List<DcinsidePostData> results = new ArrayList<>();
-        List<Map<String, String>> errors = new ArrayList<>();
-        List<UrlTiming> timings = new ArrayList<>();
-
         int total = validUrls.size();
         int completed = 0;
         int successCount = 0;
         int failCount = 0;
+        int nextSerial = request.startSerial() != null ? request.startSerial() : 1;
 
         try (ScreenshotService.CaptureSession captureSession = screenshotService.openCaptureSession()) {
             for (String trimmed : validUrls) {
@@ -110,9 +107,7 @@ public class CrawlController {
                             completed, total, trimmed, "screenshot", successCount, failCount
                     ));
 
-                    int excelRowNumber = request.startSerial() != null
-                            ? request.startSerial() + results.size()
-                            : results.size() + 1;
+                    int excelRowNumber = nextSerial++;
                     String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
                     TimedResult<CaptureImage> capture =
                             captureSession.captureFullPage(trimmed, excelRowNumber, postNo);
@@ -124,7 +119,6 @@ public class CrawlController {
                     ));
 
                     DcinsidePostData attached = crawlService.attachCapture(crawled.value(), capture.value());
-                    results.add(attached);
                     timer.step("attach-capture");
 
                     StepTimings merged = StepTimings.merge(
@@ -134,7 +128,6 @@ public class CrawlController {
                     UrlTiming successTiming = new UrlTiming(
                             trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()
                     );
-                    timings.add(successTiming);
                     callbacks.urlResult().accept(attached);
                     callbacks.urlTiming().accept(successTiming);
 
@@ -147,9 +140,7 @@ public class CrawlController {
                     partialTimings.add(e.timings());
                     log.warn("Crawl failed for {} at {}: {}", trimmed, e.stage(), e.getMessage());
                     Map<String, String> error = errorEntry(trimmed, e);
-                    errors.add(error);
                     UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
-                    timings.add(failedTiming);
                     callbacks.urlError().accept(error);
                     callbacks.urlTiming().accept(failedTiming);
                     failCount++;
@@ -160,9 +151,7 @@ public class CrawlController {
                 } catch (Exception e) {
                     log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
                     Map<String, String> error = errorEntry(trimmed, e);
-                    errors.add(error);
                     UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
-                    timings.add(failedTiming);
                     callbacks.urlError().accept(error);
                     callbacks.urlTiming().accept(failedTiming);
                     failCount++;
@@ -176,7 +165,7 @@ public class CrawlController {
             throw new IllegalStateException("스크린샷 세션을 시작할 수 없습니다: " + e.getMessage(), e);
         }
 
-        return new CrawlResult(results, errors, timings);
+        return new CrawlSummary(successCount, failCount, total);
     }
 
     private void sendEvent(SseEmitter emitter, String eventName, Object payload) {
@@ -244,16 +233,16 @@ public class CrawlController {
         }
     }
 
-    private record CrawlResult(
-            List<DcinsidePostData> results,
-            List<Map<String, String>> errors,
-            List<UrlTiming> timings
+    private record CrawlSummary(
+            int successCount,
+            int failCount,
+            int attemptedCount
     ) {
         Map<String, Object> toBody() {
             Map<String, Object> body = new LinkedHashMap<>();
-            body.put("data", results);
-            body.put("errors", errors);
-            body.put("timings", timings);
+            body.put("successCount", successCount);
+            body.put("failCount", failCount);
+            body.put("attemptedCount", attemptedCount);
             return body;
         }
     }

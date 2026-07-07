@@ -51,6 +51,12 @@ public class DcinsideCrawlService {
     // JSON 파서
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    private final CookieManager cookieManager = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
+    private final HttpClient httpClient = HttpClient.newBuilder()
+            .cookieHandler(cookieManager)
+            .followRedirects(HttpClient.Redirect.NORMAL)
+            .build();
+
     // 디시인사이드 게시글 크롤링
     public TimedResult<DcinsidePostData> crawl(String url) throws Exception {
         if (!DC_URL_PATTERN.matcher(url).find() && !url.contains("gall.dcinside.com")) {
@@ -68,17 +74,10 @@ public class DcinsideCrawlService {
     }
 
     private DcinsidePostData crawlInternal(String normalizedUrl, StepTimer timer) throws Exception {
-        // 쿠키 관리자
-        CookieManager cookieManager = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
-
-        // HTTP 클라이언트
-        HttpClient client = HttpClient.newBuilder()
-                .cookieHandler(cookieManager)
-                .followRedirects(HttpClient.Redirect.NORMAL)
-                .build();
+        cookieManager.getCookieStore().removeAll();
 
         // 페이지 파싱
-        HttpResponse<String> pageResponse = fetchPage(client, normalizedUrl);
+        HttpResponse<String> pageResponse = fetchPage(httpClient, normalizedUrl);
         timer.step("fetch-page");
 
         // 문서 파싱
@@ -127,7 +126,7 @@ public class DcinsideCrawlService {
         timer.step("parse-html");
 
         // 댓글 추출
-        List<CommentData> comments = fetchAllComments(client, normalizedUrl, galleryId, postNo, esno, galleryType);
+        List<CommentData> comments = fetchAllComments(httpClient, normalizedUrl, galleryId, postNo, esno, galleryType);
         timer.step("fetch-comments (" + comments.size() + " comments)");
         int realCommentCount = countRealComments(comments);
         int commentCount = comments.isEmpty()

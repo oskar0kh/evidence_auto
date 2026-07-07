@@ -1,6 +1,9 @@
 import ExcelJS from 'exceljs';
 import { extractBodySection, extractCommentsSection } from './commentSection';
-import { writeArrayBufferToDirectory } from '../../shared/lib/localFileStorage';
+import {
+  tryReadFileFromDirectory,
+  writeArrayBufferToDirectory,
+} from '../../shared/lib/localFileStorage';
 import {
   buildExcelFilename,
   extractSerialFromCaptureFilename,
@@ -14,6 +17,9 @@ export interface ExportCrimeListOptions {
   keyword?: string;
   stamp: string;
 }
+
+const SHEET_NAME = '범죄일람표';
+const DATA_START_ROW = 3;
 
 const COLUMNS = [
   { header: '연번', key: 'serial', width: 8 },
@@ -57,7 +63,6 @@ function sanitizeExcelText(value: unknown): string {
   if (value == null) {
     return '';
   }
-  // XML 1.0에서 허용되지 않는 제어 문자 제거 (탭·LF·CR은 유지)
   const sanitized = String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '');
   if (sanitized.length <= EXCEL_MAX_CELL_CHARS) {
     return sanitized;
@@ -94,12 +99,10 @@ function calculateRowHeight(values: unknown[]): number {
   return Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, contentHeight));
 }
 
-/** Excel 열 너비(문자 단위) → 화면 픽셀 (Calibri 11pt 기준) */
 function columnWidthToPixels(columnWidth: number): number {
   return Math.max(1, Math.floor(((256 * columnWidth + Math.floor(128 / 7)) / 256) * 7));
 }
 
-/** Excel 행 높이(pt) → 화면 픽셀 */
 function rowHeightToPixels(rowHeightPt: number): number {
   return Math.max(1, Math.floor((rowHeightPt * 96) / 72));
 }
@@ -113,7 +116,6 @@ function loadImageFromBase64(base64: string): Promise<HTMLImageElement> {
   });
 }
 
-/** 썸네일 열 너비에 맞춰 전체 이미지가 보이도록 행 높이(pt)를 계산합니다. */
 function rowHeightForContainedImage(
   imageWidth: number,
   imageHeight: number,
@@ -129,7 +131,6 @@ function rowHeightForContainedImage(
   return Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, heightPt));
 }
 
-/** 셀 크기에 맞게 비율을 유지하며 전체 이미지를 축소·배치합니다. */
 function fitThumbnailToPngBase64(
   image: HTMLImageElement,
   cellWidthPx: number,
@@ -162,14 +163,36 @@ function fitThumbnailToPngBase64(
   };
 }
 
-export async function exportCrimeListExcel(
-  posts: DcinsidePostData[],
-  directory: FileSystemDirectoryHandle,
-  options: ExportCrimeListOptions
-): Promise<void> {
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = '범죄일람표 크롤러';
-  const sheet = workbook.addWorksheet('범죄일람표', {
+function getUrlFromRow(sheet: ExcelJS.Worksheet, rowIndex: number): string {
+  const cellValue = sheet.getRow(rowIndex).getCell(URL_COLUMN).value;
+  if (cellValue && typeof cellValue === 'object' && 'text' in cellValue) {
+    return String((cellValue as { text: string }).text).trim();
+  }
+  return String(cellValue ?? '').trim();
+}
+
+function findRowIndexByUrl(sheet: ExcelJS.Worksheet, url: string): number | null {
+  const normalized = url.trim();
+  if (!normalized) {
+    return null;
+  }
+
+  const lastRow = sheet.lastRow?.number ?? DATA_START_ROW - 1;
+  for (let rowIndex = DATA_START_ROW; rowIndex <= lastRow; rowIndex++) {
+    if (getUrlFromRow(sheet, rowIndex) === normalized) {
+      return rowIndex;
+    }
+  }
+  return null;
+}
+
+function getNextDataRow(sheet: ExcelJS.Worksheet): number {
+  const lastRow = sheet.lastRow?.number ?? DATA_START_ROW - 1;
+  return Math.max(lastRow + 1, DATA_START_ROW);
+}
+
+function setupNewCrimeListSheet(workbook: ExcelJS.Workbook): ExcelJS.Worksheet {
+  const sheet = workbook.addWorksheet(SHEET_NAME, {
     views: [{ state: 'frozen', ySplit: 2 }],
   });
 
@@ -200,96 +223,164 @@ export async function exportCrimeListExcel(
     };
   });
 
+  return sheet;
+}
+
+async function loadOrCreateCrimeListWorkbook(
+  directory: FileSystemDirectoryHandle,
+  filename: string
+): Promise<{ workbook: ExcelJS.Workbook; sheet: ExcelJS.Worksheet }> {
+  const workbook = new ExcelJS.Workbook();
+  const existing = await tryReadFileFromDirectory(directory, filename);
+
+  if (existing) {
+    await workbook.xlsx.load(existing);
+    const sheet = workbook.getWorksheet(SHEET_NAME) ?? workbook.worksheets[0];
+    if (!sheet) {
+      throw new Error('기존 범죄일람표 파일을 읽을 수 없습니다.');
+    }
+    return { workbook, sheet };
+  }
+
+  workbook.creator = '범죄일람표 크롤러';
+  const sheet = setupNewCrimeListSheet(workbook);
+  return { workbook, sheet };
+}
+
+async function writePostToSheet(
+  workbook: ExcelJS.Workbook,
+  sheet: ExcelJS.Worksheet,
+  post: DcinsidePostData,
+  rowIndex: number,
+  serial: number
+): Promise<void> {
+  const captureFilename = getCaptureFilename(post.captureFilePath);
+  const commentSection = extractCommentsSection(post.content);
+  const bodySection = extractBodySection(post.content);
+
+  const rowValues = [
+    serial,
+    sanitizeExcelText(post.postDate),
+    sanitizeExcelText(post.galleryName ?? ''),
+    sanitizeExcelText(post.nickname),
+    sanitizeExcelText(post.title),
+    sanitizeExcelText(bodySection),
+    sanitizeExcelText(commentSection),
+    sanitizeExcelText(post.remarks),
+    sanitizeExcelText(post.url),
+    sanitizeExcelText(post.captureFilePath),
+    '',
+    sanitizeExcelText(post.crimeType || ''),
+  ];
+
+  const row = sheet.getRow(rowIndex);
+  let rowHeight = calculateRowHeight(rowValues);
+  let captureImage: HTMLImageElement | null = null;
+
+  if (post.captureImageBase64) {
+    captureImage = await loadImageFromBase64(post.captureImageBase64);
+    const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
+    const thumbnailRowHeight = rowHeightForContainedImage(
+      captureImage.width,
+      captureImage.height,
+      thumbnailColumnWidth
+    );
+    rowHeight = Math.max(rowHeight, thumbnailRowHeight);
+  }
+
+  row.values = rowValues;
+  row.height = rowHeight;
+  row.eachCell((cell) => {
+    cell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true };
+    cell.border = {
+      top: { style: 'thin' },
+      left: { style: 'thin' },
+      bottom: { style: 'thin' },
+      right: { style: 'thin' },
+    };
+  });
+
+  const thumbnailCell = row.getCell(THUMBNAIL_COLUMN);
+  thumbnailCell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false };
+
+  if (post.url?.trim()) {
+    const url = sanitizeExcelText(post.url.trim());
+    const urlCell = row.getCell(URL_COLUMN);
+    urlCell.value = { text: url, hyperlink: url };
+    urlCell.font = { color: { argb: 'FF0563C1' }, underline: true };
+  }
+
+  if (captureFilename) {
+    const captureCell = row.getCell(CAPTURE_COLUMN);
+    const safeFilename = sanitizeExcelText(post.captureFilePath);
+    captureCell.value = {
+      text: safeFilename,
+      hyperlink: toCaptureHyperlink(captureFilename),
+    };
+    captureCell.font = { color: { argb: 'FF0563C1' }, underline: true };
+  }
+
+  if (captureImage) {
+    const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
+    const cellWidthPx = columnWidthToPixels(thumbnailColumnWidth);
+    const cellHeightPx = rowHeightToPixels(rowHeight);
+    const thumbnail = fitThumbnailToPngBase64(captureImage, cellWidthPx, cellHeightPx);
+    const imageId = workbook.addImage({
+      base64: thumbnail.base64,
+      extension: 'png',
+    });
+    const tlCol = THUMBNAIL_COLUMN - 1;
+    const tlRow = rowIndex - 1;
+    sheet.addImage(imageId, {
+      tl: { col: tlCol, row: tlRow },
+      br: { col: tlCol + 1, row: tlRow + 1 },
+    } as ExcelJS.ImageRange);
+  }
+}
+
+export async function appendCrimeListExcel(
+  posts: DcinsidePostData[],
+  directory: FileSystemDirectoryHandle,
+  excelFilename: string
+): Promise<void> {
+  if (posts.length === 0) {
+    return;
+  }
+
+  const { workbook, sheet } = await loadOrCreateCrimeListWorkbook(directory, excelFilename);
+
+  for (const post of posts) {
+    const captureFilename = getCaptureFilename(post.captureFilePath);
+    const serial =
+      extractSerialFromCaptureFilename(captureFilename) ??
+      getNextDataRow(sheet) - DATA_START_ROW + 1;
+    const existingRow = findRowIndexByUrl(sheet, post.url);
+    const rowIndex = existingRow ?? getNextDataRow(sheet);
+    await writePostToSheet(workbook, sheet, post, rowIndex, serial);
+  }
+
+  const buffer = await workbook.xlsx.writeBuffer();
+  await writeArrayBufferToDirectory(directory, excelFilename, buffer as ArrayBuffer);
+}
+
+export async function exportCrimeListExcel(
+  posts: DcinsidePostData[],
+  directory: FileSystemDirectoryHandle,
+  options: ExportCrimeListOptions
+): Promise<void> {
+  const workbook = new ExcelJS.Workbook();
+  workbook.creator = '범죄일람표 크롤러';
+  const sheet = setupNewCrimeListSheet(workbook);
+
   for (let index = 0; index < posts.length; index++) {
     const post = posts[index];
     const captureFilename = getCaptureFilename(post.captureFilePath);
     const serial =
       extractSerialFromCaptureFilename(captureFilename) ?? index + 1;
-    const commentSection = extractCommentsSection(post.content);
-    const bodySection = extractBodySection(post.content);
-
-    const rowValues = [
-      serial,
-      sanitizeExcelText(post.postDate),
-      sanitizeExcelText(post.galleryName ?? ''),
-      sanitizeExcelText(post.nickname),
-      sanitizeExcelText(post.title),
-      sanitizeExcelText(bodySection),
-      sanitizeExcelText(commentSection),
-      sanitizeExcelText(post.remarks),
-      sanitizeExcelText(post.url),
-      sanitizeExcelText(post.captureFilePath),
-      '',
-      sanitizeExcelText(post.crimeType || ''),
-    ];
-
-    const row = sheet.getRow(index + 3);
-    let rowHeight = calculateRowHeight(rowValues);
-    let captureImage: HTMLImageElement | null = null;
-
-    if (post.captureImageBase64) {
-      captureImage = await loadImageFromBase64(post.captureImageBase64);
-      const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
-      const thumbnailRowHeight = rowHeightForContainedImage(
-        captureImage.width,
-        captureImage.height,
-        thumbnailColumnWidth
-      );
-      rowHeight = Math.max(rowHeight, thumbnailRowHeight);
-    }
-
-    row.values = rowValues;
-    row.height = rowHeight;
-    row.eachCell((cell) => {
-      cell.alignment = { vertical: 'top', horizontal: 'left', wrapText: true };
-      cell.border = {
-        top: { style: 'thin' },
-        left: { style: 'thin' },
-        bottom: { style: 'thin' },
-        right: { style: 'thin' },
-      };
-    });
-
-    const thumbnailCell = row.getCell(THUMBNAIL_COLUMN);
-    thumbnailCell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: false };
-
-    if (post.url?.trim()) {
-      const url = sanitizeExcelText(post.url.trim());
-      const urlCell = row.getCell(URL_COLUMN);
-      urlCell.value = { text: url, hyperlink: url };
-      urlCell.font = { color: { argb: 'FF0563C1' }, underline: true };
-    }
-
-    if (captureFilename) {
-      const captureCell = row.getCell(CAPTURE_COLUMN);
-      const safeFilename = sanitizeExcelText(post.captureFilePath);
-      captureCell.value = {
-        text: safeFilename,
-        hyperlink: toCaptureHyperlink(captureFilename),
-      };
-      captureCell.font = { color: { argb: 'FF0563C1' }, underline: true };
-    }
-
-    if (captureImage) {
-      const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
-      const cellWidthPx = columnWidthToPixels(thumbnailColumnWidth);
-      const cellHeightPx = rowHeightToPixels(rowHeight);
-      const thumbnail = fitThumbnailToPngBase64(captureImage, cellWidthPx, cellHeightPx);
-      const imageId = workbook.addImage({
-        base64: thumbnail.base64,
-        extension: 'png',
-      });
-      const tlCol = THUMBNAIL_COLUMN - 1;
-      const tlRow = index + 2;
-      sheet.addImage(imageId, {
-        tl: { col: tlCol, row: tlRow },
-        br: { col: tlCol + 1, row: tlRow + 1 },
-      } as ExcelJS.ImageRange);
-    }
+    await writePostToSheet(workbook, sheet, post, index + DATA_START_ROW, serial);
   }
 
   const buffer = await workbook.xlsx.writeBuffer();
   const filename = buildExcelFilename(options.communityName, options.keyword, options.stamp);
-
   await writeArrayBufferToDirectory(directory, filename, buffer as ArrayBuffer);
 }
