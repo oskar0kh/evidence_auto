@@ -10,11 +10,16 @@ const searchApi = axios.create({
   timeout: 0,
 });
 
+function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'AbortError';
+}
+
 export async function crawlDcinsideStream(
   urls: string[],
   startSerial: number | undefined,
   onProgress: (progress: CrawlProgressEvent) => void,
-  onUrlResult?: (post: DcinsidePostData) => void
+  onUrlResult?: (post: DcinsidePostData) => void,
+  signal?: AbortSignal
 ): Promise<CrawlStreamResult> {
   const response = await fetch('/api/crawl/dcinside/stream', {
     method: 'POST',
@@ -26,6 +31,7 @@ export async function crawlDcinsideStream(
       urls,
       startSerial: startSerial ?? null,
     }),
+    signal,
   });
 
   if (!response.ok) {
@@ -124,6 +130,13 @@ export async function crawlDcinsideStream(
       applySseMessage(message);
     }
   } catch (e) {
+    if (isAbortError(e)) {
+      return {
+        ...accumulated,
+        interrupted: true,
+        interruptMessage: '크롤링이 취소됐습니다.',
+      };
+    }
     if (accumulated.data.length > 0 || accumulated.errors.length > 0) {
       return {
         ...accumulated,
@@ -152,15 +165,20 @@ export async function crawlDcinsideStream(
 
 async function searchDcinside(
   query: string,
-  options: SearchOptions = {}
+  options: SearchOptions = {},
+  signal?: AbortSignal
 ): Promise<SearchResponse> {
   const { maxResults = 100, startDate, endDate } = options;
-  const { data } = await searchApi.post<SearchResponse>('/search/dcinside', {
-    query,
-    maxResults,
-    startDate: startDate ?? null,
-    endDate: endDate ?? null,
-  });
+  const { data } = await searchApi.post<SearchResponse>(
+    '/search/dcinside',
+    {
+      query,
+      maxResults,
+      startDate: startDate ?? null,
+      endDate: endDate ?? null,
+    },
+    { signal }
+  );
   return data;
 }
 
@@ -174,7 +192,8 @@ export interface SearchAllTermsProgress {
 export async function searchDcinsideAllTerms(
   query: string,
   options: SearchOptions = {},
-  onProgress?: (progress: SearchAllTermsProgress) => void
+  onProgress?: (progress: SearchAllTermsProgress) => void,
+  signal?: AbortSignal
 ): Promise<SearchResponse> {
   const terms = parseSearchTerms(query);
   if (terms.length === 0) {
@@ -185,6 +204,10 @@ export async function searchDcinsideAllTerms(
   let totalSearchMs = 0;
 
   for (let i = 0; i < terms.length; i++) {
+    if (signal?.aborted) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+
     const term = terms[i];
     onProgress?.({
       termIndex: i + 1,
@@ -193,7 +216,7 @@ export async function searchDcinsideAllTerms(
       collectedUrlCount: merged.size,
     });
 
-    const result = await searchDcinside(term, options);
+    const result = await searchDcinside(term, options, signal);
     totalSearchMs += result.searchMs ?? 0;
     for (const url of result.urls) {
       merged.add(url);

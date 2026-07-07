@@ -1,4 +1,5 @@
 export const CRAWL_BATCH_SIZE = 100;
+export const RESULTS_PAGE_SIZE = 10;
 
 export function chunkArray<T>(items: T[], size: number): T[][] {
   if (items.length === 0) {

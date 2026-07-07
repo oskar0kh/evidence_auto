@@ -16,7 +16,7 @@ import {
   persistCrimeListAndCaptures,
   type CrawlPersistSession,
 } from './features/export/persistResults';
-import { CRAWL_BATCH_SIZE, chunkArray } from './features/crawl/constants';
+import { CRAWL_BATCH_SIZE, RESULTS_PAGE_SIZE, chunkArray } from './features/crawl/constants';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from './shared/lib/nativeFolderPicker';
 import type { CrawlLogEntry, CrawlStreamResult, UrlTiming } from './features/crawl/types';
 import type { DcinsidePostData } from './platforms/dcinside/types';
@@ -54,6 +54,10 @@ function mergeSavedResults(
     }
   }
   return merged;
+}
+
+function isAbortError(e: unknown): boolean {
+  return e instanceof DOMException && e.name === 'AbortError';
 }
 
 function shortenUrl(url: string, max = 56): string {
@@ -227,10 +231,12 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [savedResults, setSavedResults] = useState<DcinsidePostData[]>([]);
+  const [resultPage, setResultPage] = useState(1);
   const [errors, setErrors] = useState<{ url: string; error: string }[]>([]);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [lastCrawlDurationMs, setLastCrawlDurationMs] = useState<number | null>(null);
   const crawlStartAtRef = useRef<number | null>(null);
+  const crawlAbortRef = useRef<AbortController | null>(null);
   const lastSearchKeywordRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
@@ -244,6 +250,24 @@ export default function App() {
     }, 100);
     return () => window.clearInterval(timerId);
   }, [loading]);
+
+  useEffect(() => {
+    const totalPages = Math.max(1, Math.ceil(savedResults.length / RESULTS_PAGE_SIZE));
+    if (resultPage > totalPages) {
+      setResultPage(totalPages);
+    }
+  }, [savedResults.length, resultPage]);
+
+  const beginCrawlSession = (): AbortSignal => {
+    crawlAbortRef.current?.abort();
+    const controller = new AbortController();
+    crawlAbortRef.current = controller;
+    return controller.signal;
+  };
+
+  const handleCancelCrawl = () => {
+    crawlAbortRef.current?.abort();
+  };
 
   const handlePickDirectory = async () => {
     if (!isNativeFolderPickerSupported()) {
@@ -309,6 +333,7 @@ export default function App() {
     }
 
     const useDateRange = Boolean(searchStartDate && searchEndDate);
+    const abortSignal = beginCrawlSession();
 
     crawlStartAtRef.current = Date.now();
     setElapsedMs(0);
@@ -346,7 +371,8 @@ export default function App() {
             successCount: 0,
             failCount: 0,
           });
-        }
+        },
+        abortSignal
       );
       logContext.searchMs = searchResult.searchMs;
 
@@ -373,6 +399,17 @@ export default function App() {
         logContext,
       });
     } catch (e) {
+      if (isAbortError(e)) {
+        setError('크롤링이 취소됐습니다.');
+        setInfoMessage(null);
+        if (crawlStartAtRef.current !== null) {
+          setLastCrawlDurationMs(Date.now() - crawlStartAtRef.current);
+        }
+        setLoading(false);
+        setProgress(null);
+        crawlAbortRef.current = null;
+        return;
+      }
       const message = resolveCrawlError(e);
       setError(message);
       await saveCrawlLog(
@@ -389,6 +426,7 @@ export default function App() {
       }
       setLoading(false);
       setProgress(null);
+      crawlAbortRef.current = null;
     }
   };
 
@@ -410,6 +448,10 @@ export default function App() {
       setInfoMessage(null);
       setErrors([]);
     }
+
+    const abortSignal = options?.skipInit
+      ? (crawlAbortRef.current?.signal ?? beginCrawlSession())
+      : beginCrawlSession();
 
     const batchErrors: { url: string; error: string }[] = [];
     const batchTimings: UrlTiming[] = [];
@@ -458,7 +500,8 @@ export default function App() {
           },
           (post) => {
             batchResults = mergeSavedResults(batchResults, [post]);
-          }
+          },
+          abortSignal
         );
 
         const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
@@ -511,8 +554,12 @@ export default function App() {
         errorMessage = `일부 URL 처리에 실패했습니다. (성공 ${successCount}건, 실패 ${batchErrors.length}건)`;
       }
     } catch (e) {
-      errorMessage = resolveCrawlError(e);
-      batchErrors.push({ url: '(크롤링)', error: errorMessage });
+      if (isAbortError(e)) {
+        errorMessage = '크롤링이 취소됐습니다.';
+      } else {
+        errorMessage = resolveCrawlError(e);
+        batchErrors.push({ url: '(크롤링)', error: errorMessage });
+      }
     } finally {
       if (errorMessage) {
         if (autoSaved && !wasInterrupted) {
@@ -546,6 +593,7 @@ export default function App() {
       );
       setLoading(false);
       setProgress(null);
+      crawlAbortRef.current = null;
       if (options?.clearUrlInput) {
         setUrlInput('');
       }
@@ -581,6 +629,13 @@ export default function App() {
           )
         )
       : 0;
+
+  const totalResultPages = Math.max(1, Math.ceil(savedResults.length / RESULTS_PAGE_SIZE));
+  const paginatedResults = savedResults.slice(
+    (resultPage - 1) * RESULTS_PAGE_SIZE,
+    resultPage * RESULTS_PAGE_SIZE
+  );
+  const resultStartIndex = (resultPage - 1) * RESULTS_PAGE_SIZE;
 
   const handleSaveExcel = async () => {
     if (savedResults.length === 0) {
@@ -705,16 +760,28 @@ export default function App() {
             >
               {loading ? '검색·크롤링 중…' : '입력한 검색어로 크롤링'}
             </button>
-            <button
-              type="button"
-              className="btn secondary btn-with-spinner"
-              onClick={() => void handleSaveExcel()}
-              disabled={loading || saving || savedResults.length === 0}
-              aria-busy={saving}
-            >
-              <span className="btn-label">범죄일람표, 캡처화면 저장</span>
-              {saving && <span className="btn-spinner" aria-hidden="true" />}
-            </button>
+            <div className="save-cancel-group">
+              <button
+                type="button"
+                className="btn secondary btn-with-spinner"
+                onClick={() => void handleSaveExcel()}
+                disabled={loading || saving || savedResults.length === 0}
+                aria-busy={saving}
+              >
+                <span className="btn-label">범죄일람표, 캡처화면 저장</span>
+                {saving && <span className="btn-spinner" aria-hidden="true" />}
+              </button>
+              <button
+                type="button"
+                className="btn cancel-crawl"
+                onClick={handleCancelCrawl}
+                disabled={!loading}
+                aria-label="크롤링 취소"
+                title="크롤링 취소"
+              >
+                ✕
+              </button>
+            </div>
             <span className="saved-count">현재까지 저장된 링크 개수: {savedResults.length}</span>
           </div>
           {lastCrawlDurationMs !== null && !loading && (
@@ -762,12 +829,37 @@ export default function App() {
 
         {savedResults.length > 0 && (
           <section className="result-section">
-            <h2>저장된 크롤링 결과 ({savedResults.length}건)</h2>
+            <div className="result-section-header">
+              <h2>저장된 크롤링 결과 ({savedResults.length}건)</h2>
+              {totalResultPages > 1 && (
+                <div className="pagination">
+                  <button
+                    type="button"
+                    className="btn pagination-btn"
+                    onClick={() => setResultPage((page) => Math.max(1, page - 1))}
+                    disabled={resultPage <= 1}
+                  >
+                    이전
+                  </button>
+                  <span className="pagination-info">
+                    {resultPage} / {totalResultPages}
+                  </span>
+                  <button
+                    type="button"
+                    className="btn pagination-btn"
+                    onClick={() => setResultPage((page) => Math.min(totalResultPages, page + 1))}
+                    disabled={resultPage >= totalResultPages}
+                  >
+                    다음
+                  </button>
+                </div>
+              )}
+            </div>
             <div className="result-list">
-              {savedResults.map((post, index) => (
+              {paginatedResults.map((post, index) => (
                 <article key={post.url} className="result-card">
                   <h3>
-                    <span className="result-serial">{index + 1}.</span> {post.title}
+                    <span className="result-serial">{resultStartIndex + index + 1}.</span> {post.title}
                   </h3>
                   <dl>
                     <div>
