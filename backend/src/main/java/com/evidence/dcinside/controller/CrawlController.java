@@ -12,7 +12,7 @@ import com.evidence.dto.CaptureImage;
 import com.evidence.dto.CrawlProgressEvent;
 import com.evidence.dto.TimedResult;
 import com.evidence.dto.UrlTiming;
-import com.evidence.service.StageTimedException;
+import com.evidence.exception.StageTimedException;
 import com.evidence.util.StepTimer;
 import com.evidence.util.StepTimings;
 import org.slf4j.Logger;
@@ -37,6 +37,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Consumer;
+import java.util.function.Function;
 
 @RestController
 @RequestMapping("/api/crawl")
@@ -59,17 +60,31 @@ public class CrawlController {
 
     @PostMapping(value = "/dcinside/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public SseEmitter crawlDcinsideStream(@RequestBody CrawlRequest request) {
-        SseEmitter emitter = new SseEmitter(-1L);
-
         if (request.urls() == null || request.urls().isEmpty()) {
+            SseEmitter emitter = new SseEmitter(-1L);
             sendErrorAndComplete(emitter, "URL을 입력해 주세요.");
             return emitter;
         }
+        return runSseCrawl(callbacks -> crawlAllUrls(request, callbacks));
+    }
+
+    @PostMapping(value = "/dcinside/search-stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    public SseEmitter searchCrawlDcinsideStream(@RequestBody SearchCrawlRequest request) {
+        if (request.query() == null || request.query().isBlank()) {
+            SseEmitter emitter = new SseEmitter(-1L);
+            sendErrorAndComplete(emitter, "검색어를 입력해 주세요.");
+            return emitter;
+        }
+        return runSseCrawl(callbacks -> searchAndCrawl(request, callbacks));
+    }
+
+    private SseEmitter runSseCrawl(Function<CrawlCallbacks, CrawlSummary> job) {
+        SseEmitter emitter = new SseEmitter(-1L);
 
         CompletableFuture.runAsync(() -> {
             try {
                 CrawlCallbacks callbacks = CrawlCallbacks.streaming(this, emitter);
-                CrawlSummary summary = crawlAllUrls(request, callbacks);
+                CrawlSummary summary = job.apply(callbacks);
                 sendEvent(emitter, "complete", summary.toBody());
                 emitter.complete();
             } catch (Exception e) {
@@ -83,36 +98,6 @@ public class CrawlController {
 
         emitter.onTimeout(() -> log.warn("SSE crawl stream timed out"));
         emitter.onError(error -> log.warn("SSE crawl stream error: {}", error.getMessage()));
-
-        return emitter;
-    }
-
-    @PostMapping(value = "/dcinside/search-stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public SseEmitter searchCrawlDcinsideStream(@RequestBody SearchCrawlRequest request) {
-        SseEmitter emitter = new SseEmitter(-1L);
-
-        if (request.query() == null || request.query().isBlank()) {
-            sendErrorAndComplete(emitter, "검색어를 입력해 주세요.");
-            return emitter;
-        }
-
-        CompletableFuture.runAsync(() -> {
-            try {
-                CrawlCallbacks callbacks = CrawlCallbacks.streaming(this, emitter);
-                CrawlSummary summary = searchAndCrawl(request, callbacks);
-                sendEvent(emitter, "complete", summary.toBody());
-                emitter.complete();
-            } catch (Exception e) {
-                log.error("SSE search-crawl stream failed", e);
-                sendErrorAndComplete(
-                        emitter,
-                        e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
-                );
-            }
-        });
-
-        emitter.onTimeout(() -> log.warn("SSE search-crawl stream timed out"));
-        emitter.onError(error -> log.warn("SSE search-crawl stream error: {}", error.getMessage()));
 
         return emitter;
     }

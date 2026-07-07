@@ -1,4 +1,10 @@
 import ExcelJS from 'exceljs';
+import {
+  CRAWL_LOG_HEADER_FILL,
+  EXCEL_HEADER_FONT,
+  sanitizeExcelText,
+} from '../../shared/lib/excelUtils';
+import { formatLogDuration } from '../../shared/lib/formatDuration';
 import { getOrCreateSubdirectory, tryReadFileFromDirectory, writeArrayBufferToDirectory } from '../../shared/lib/localFileStorage';
 import type { CrawlLogEntry } from './types';
 
@@ -50,47 +56,11 @@ const STEP_NAME_LABELS: Record<string, string> = {
   'write-temp-file': '임시 파일 저장',
 };
 
-const HEADER_FILL = {
-  type: 'pattern' as const,
-  pattern: 'solid' as const,
-  fgColor: { argb: 'FF1F4E78' },
-};
-
-const HEADER_FONT = {
-  bold: true,
-  color: { argb: 'FFFFFFFF' },
-  size: 11,
-};
-
-const EXCEL_MAX_CELL_CHARS = 32767;
-const EXCEL_TRUNCATION_SUFFIX = '\n…(이하 생략)';
-
-function sanitizeExcelText(value: unknown): string {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  const sanitized = String(value).replace(/\r\n/g, '\n');
-  if (sanitized.length <= EXCEL_MAX_CELL_CHARS) {
-    return sanitized;
-  }
-  const maxContentLength = EXCEL_MAX_CELL_CHARS - EXCEL_TRUNCATION_SUFFIX.length;
-  return sanitized.slice(0, maxContentLength) + EXCEL_TRUNCATION_SUFFIX;
-}
-
-export function formatDuration(ms: number): string {
-  const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-  const pad = (value: number) => String(value).padStart(2, '0');
-  return `${pad(hours)}:${pad(minutes)}:${pad(seconds)} (${ms}ms)`;
-}
-
 function formatOptionalDuration(ms: number | undefined): string {
   if (ms === undefined || ms === null) {
     return '';
   }
-  return formatDuration(ms);
+  return formatLogDuration(ms);
 }
 
 export function formatStepLabel(stepName: string): string {
@@ -109,7 +79,7 @@ export function formatStepLabel(stepName: string): string {
 function formatStepDetails(steps: Record<string, number>): string {
   return Object.entries(steps)
     .sort(([a], [b]) => formatStepLabel(a).localeCompare(formatStepLabel(b), 'ko'))
-    .map(([name, ms]) => `${formatStepLabel(name)}: ${formatDuration(ms)}`)
+    .map(([name, ms]) => `${formatStepLabel(name)}: ${formatLogDuration(ms)}`)
     .join('\n');
 }
 
@@ -132,14 +102,14 @@ function buildRowValues(entry: CrawlLogEntry): Record<string, string | number> {
     failCount: entry.failCount,
     successRate,
     failureReasons: sanitizeExcelText(entry.failureReasons),
-    totalMs: formatDuration(entry.totalMs),
+    totalMs: formatLogDuration(entry.totalMs),
     textCrawlMs: formatOptionalDuration(entry.textCrawlMs),
     pageNavigateMs: formatOptionalDuration(entry.pageNavigateMs),
     waitContentMs: formatOptionalDuration(entry.waitContentMs),
     waitCommentsMs: formatOptionalDuration(entry.waitCommentsMs),
     captureImagesMs: formatOptionalDuration(entry.captureImagesMs),
     screenshotMs: formatOptionalDuration(entry.screenshotMs),
-    avgPerPostMs: avgPerPostMs > 0 ? formatDuration(avgPerPostMs) : '',
+    avgPerPostMs: avgPerPostMs > 0 ? formatLogDuration(avgPerPostMs) : '',
     stepDetails: sanitizeExcelText(formatStepDetails(entry.stepDetails)),
   };
 }
@@ -154,8 +124,8 @@ function ensureHeaderRow(sheet: ExcelJS.Worksheet): void {
   COLUMNS.forEach((column, index) => {
     headerRow.getCell(index + 1).value = column.header;
   });
-  headerRow.font = HEADER_FONT;
-  headerRow.fill = HEADER_FILL;
+  headerRow.font = EXCEL_HEADER_FONT;
+  headerRow.fill = CRAWL_LOG_HEADER_FILL;
   headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
   headerRow.height = 22;
   sheet.views = [{ state: 'frozen', ySplit: 1 }];

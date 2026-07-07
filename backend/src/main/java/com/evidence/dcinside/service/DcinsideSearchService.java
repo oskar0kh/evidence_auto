@@ -1,7 +1,9 @@
 package com.evidence.dcinside.service;
 
+import com.evidence.dcinside.DcinsideConstants;
 import com.evidence.dcinside.dto.GalleryCandidate;
 import com.evidence.dcinside.dto.SearchPageEvent;
+import com.evidence.dcinside.dto.SearchRequest;
 import com.evidence.dcinside.dto.SearchStreamCriteria;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
@@ -30,9 +32,6 @@ import java.util.regex.Pattern;
 @Service
 public class DcinsideSearchService {
 
-    private static final String USER_AGENT =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
     private static final int DEFAULT_MAX_RESULTS = 100;
     private static final int MAX_PAGE_LIMIT = 10;
     private static final int MAX_DATE_RANGE_PAGE_LIMIT = 500;
@@ -42,9 +41,6 @@ public class DcinsideSearchService {
             DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm");
     private static final DateTimeFormatter REQUEST_DATE_FORMAT = DateTimeFormatter.ISO_LOCAL_DATE;
 
-    private static final Pattern POST_URL_PATTERN = Pattern.compile(
-            "https?://(?:m\\.)?gall\\.dcinside\\.com/(?:mgallery/board|mini/board|board)/view/\\?.*"
-    );
     private static final Pattern GALLERY_ID_FROM_URL_PATTERN =
             Pattern.compile("[?&]id=([^&\\s]+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern GALLERY_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_\\-]+$");
@@ -52,6 +48,60 @@ public class DcinsideSearchService {
     private final HttpClient httpClient = HttpClient.newBuilder()
             .followRedirects(HttpClient.Redirect.NORMAL)
             .build();
+
+    public record SearchResult(
+            List<String> urls,
+            boolean dateRangeSearch,
+            boolean gallerySearch,
+            String galleryId,
+            String startDate,
+            String endDate
+    ) {
+    }
+
+    public SearchResult search(SearchRequest request) throws Exception {
+        boolean dateRangeSearch = hasDateRange(request.startDate(), request.endDate());
+        boolean gallerySearch = hasGalleryId(request.galleryId());
+        List<String> urls;
+        if (gallerySearch) {
+            if (dateRangeSearch) {
+                LocalDate startDate = parseRequestDate(request.startDate());
+                LocalDate endDate = parseRequestDate(request.endDate());
+                urls = searchGalleryByDateRange(
+                        request.query(),
+                        request.galleryId(),
+                        startDate,
+                        endDate
+                );
+            } else {
+                urls = searchGallery(request.query(), request.galleryId(), request.maxResults());
+            }
+        } else if (dateRangeSearch) {
+            LocalDate startDate = parseRequestDate(request.startDate());
+            LocalDate endDate = parseRequestDate(request.endDate());
+            urls = searchIntegratedByDateRange(request.query(), startDate, endDate);
+        } else {
+            urls = searchIntegrated(request.query(), request.maxResults());
+        }
+
+        return new SearchResult(
+                urls,
+                dateRangeSearch,
+                gallerySearch,
+                gallerySearch ? normalizeGalleryId(request.galleryId()) : null,
+                dateRangeSearch ? request.startDate() : null,
+                dateRangeSearch ? request.endDate() : null
+        );
+    }
+
+    public static boolean hasDateRange(String startDate, String endDate) {
+        boolean hasStart = startDate != null && !startDate.isBlank();
+        boolean hasEnd = endDate != null && !endDate.isBlank();
+        if (hasStart != hasEnd) {
+            throw new IllegalArgumentException("검색 기간의 시작일과 종료일을 모두 입력해 주세요.");
+        }
+        return hasStart;
+    }
 
     public List<String> searchIntegrated(String query, Integer maxResults) throws Exception {
         Set<String> collected = new LinkedHashSet<>();
@@ -364,7 +414,7 @@ public class DcinsideSearchService {
     private Document fetchDocument(HttpClient client, String url) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                .header("User-Agent", USER_AGENT)
+                .header("User-Agent", DcinsideConstants.USER_AGENT)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", "ko-KR,ko;q=0.9")
                 .GET()
@@ -390,7 +440,7 @@ public class DcinsideSearchService {
                 continue;
             }
             String normalized = normalizePostUrl(href);
-            if (!POST_URL_PATTERN.matcher(normalized).find()) {
+            if (!DcinsideConstants.POST_URL_PATTERN.matcher(normalized).find()) {
                 continue;
             }
 

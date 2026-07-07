@@ -1,21 +1,19 @@
 package com.evidence.dcinside.service;
 
+import com.evidence.dcinside.service.screenshot.ChromeDriverFactory;
+import com.evidence.dcinside.service.screenshot.ImageStitcher;
 import com.evidence.dto.CaptureImage;
 import com.evidence.dto.TimedResult;
-import com.evidence.service.StageTimedException;
+import com.evidence.exception.StageTimedException;
 import com.evidence.util.StepTimer;
 import com.evidence.util.StepTimings;
-import io.github.bonigarcia.wdm.WebDriverManager;
 import jakarta.annotation.PostConstruct;
 import org.openqa.selenium.By;
 import org.openqa.selenium.Dimension;
 import org.openqa.selenium.JavascriptExecutor;
-import org.openqa.selenium.PageLoadStrategy;
 import org.openqa.selenium.WebDriver;
 import org.openqa.selenium.WebElement;
 import org.openqa.selenium.chrome.ChromeDriver;
-import org.openqa.selenium.chrome.ChromeDriverService;
-import org.openqa.selenium.chrome.ChromeOptions;
 import org.openqa.selenium.support.ui.ExpectedConditions;
 import org.openqa.selenium.support.ui.WebDriverWait;
 import org.openqa.selenium.TimeoutException;
@@ -24,20 +22,12 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
-import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
-import java.io.ByteArrayOutputStream;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.util.ArrayList;
-import java.util.Base64;
-import java.awt.Graphics2D;
-import java.awt.image.BufferedImage;
-import javax.imageio.ImageIO;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.Duration;
+import java.util.ArrayList;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,7 +42,6 @@ public class ScreenshotService {
     private static final Logger log = LoggerFactory.getLogger(ScreenshotService.class);
 
     private static final Pattern POST_NO_PATTERN = Pattern.compile("[?&]no=(\\d+)");
-    private static final Pattern CHROME_VERSION_PATTERN = Pattern.compile("(\\d+)\\.");
 
     // 캡처 대상: wrap_inner 안의 본문 article (이슈박스 article 제외)
     private static final String CAPTURE_TARGET_CSS = "div.wrap_inner article:has(.gallview_head)";
@@ -93,9 +82,9 @@ public class ScreenshotService {
     // 스크린샷 서비스 초기화
     @PostConstruct
     void init() throws Exception {
-        chromeBinary = resolveChromeBinary();
-        setupChromeDriver(chromeBinary);
-        warnIfKoreanFontsMissing();
+        chromeBinary = ChromeDriverFactory.resolveChromeBinary(configuredChromeBinary);
+        ChromeDriverFactory.setupChromeDriver(chromeBinary);
+        ChromeDriverFactory.warnIfKoreanFontsMissing();
         log.info("Screenshot Chrome binary: {}, blockTracking={}", chromeBinary, blockTracking);
     }
 
@@ -154,7 +143,7 @@ public class ScreenshotService {
                         lastError = e;
                         lastTimings = timer.finish();
                         log.warn("Screenshot attempt {}/{} failed for {}: {}", attempt, MAX_CAPTURE_ATTEMPTS, url, e.getMessage());
-                        if (isDriverSessionInvalid(e)) {
+                        if (ChromeDriverFactory.isDriverSessionInvalid(e)) {
                             invalidateDriver();
                         }
                         if (attempt < MAX_CAPTURE_ATTEMPTS) {
@@ -186,7 +175,7 @@ public class ScreenshotService {
             }
             closed = true;
             try {
-                quitDriver(driver);
+                ChromeDriverFactory.quitDriver(driver);
                 log.info("Screenshot capture session closed");
             } finally {
                 captureLock.unlock();
@@ -194,7 +183,7 @@ public class ScreenshotService {
         }
 
         private void ensureDriver(StepTimer timer) throws Exception {
-            if (driver != null && isDriverAlive(driver)) {
+            if (driver != null && ChromeDriverFactory.isDriverAlive(driver)) {
                 return;
             }
             invalidateDriver();
@@ -202,13 +191,13 @@ public class ScreenshotService {
         }
 
         private void invalidateDriver() {
-            quitDriver(driver);
+            ChromeDriverFactory.quitDriver(driver);
             driver = null;
         }
     }
 
     private ChromeDriver createAndConfigureDriver(StepTimer timer) throws Exception {
-        ChromeDriver chromeDriver = createDriver();
+        ChromeDriver chromeDriver = ChromeDriverFactory.createDriver(chromeBinary);
         if (timer != null) {
             timer.step("create-driver");
         }
@@ -251,34 +240,6 @@ public class ScreenshotService {
         TimeUnit.MILLISECONDS.sleep(100);
     }
 
-    private boolean isDriverAlive(WebDriver driver) {
-        if (driver == null) {
-            return false;
-        }
-        try {
-            driver.getTitle();
-            return true;
-        } catch (Exception e) {
-            return false;
-        }
-    }
-
-    private boolean isDriverSessionInvalid(Exception e) {
-        if (!(e instanceof org.openqa.selenium.WebDriverException)) {
-            return false;
-        }
-        String message = e.getMessage();
-        if (message == null) {
-            return false;
-        }
-        String lower = message.toLowerCase();
-        return lower.contains("invalid session")
-                || lower.contains("not reachable")
-                || lower.contains("disconnected")
-                || lower.contains("no such window")
-                || lower.contains("chrome not reachable");
-    }
-
     // 캡처 파일 이름 생성
     public static String formatFilename(int excelRowNumber, String postNo) {
         return String.format("연번 %03d_post_%s.png", excelRowNumber, postNo);
@@ -291,86 +252,6 @@ public class ScreenshotService {
             return matcher.group(1);
         }
         throw new IllegalArgumentException("URL에서 게시글 번호(no)를 찾을 수 없습니다: " + url);
-    }
-
-    private void setupChromeDriver(String binary) {
-        String majorVersion = detectChromeMajorVersion(binary);
-        WebDriverManager manager = WebDriverManager.chromedriver();
-        if (!majorVersion.isEmpty()) {
-            manager.browserVersion(majorVersion);
-            log.info("ChromeDriver browserVersion={}", majorVersion);
-        }
-        manager.setup();
-    }
-
-    // 웹 드라이버 생성
-    private ChromeDriver createDriver() {
-        ChromeOptions options = new ChromeOptions();
-        options.setBinary(chromeBinary);
-        options.setPageLoadStrategy(PageLoadStrategy.NONE);
-
-        Map<String, Object> prefs = new HashMap<>();
-        prefs.put("intl.accept_languages", "ko-KR,ko");
-        prefs.put("translate.enabled", false);
-        options.setExperimentalOption("prefs", prefs);
-
-        options.addArguments(
-                "--headless=new",
-                "--disable-gpu",
-                "--no-sandbox",
-                "--disable-setuid-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-software-rasterizer",
-                "--disable-extensions",
-                "--remote-allow-origins=*",
-                "--window-size=1280,900",
-                "--lang=ko-KR",
-                "--accept-lang=ko-KR,ko"
-        );
-        options.addArguments("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                + "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-
-        ChromeDriverService service = new ChromeDriverService.Builder()
-                .withEnvironment(Map.of("LANG", "ko_KR.UTF-8", "LC_ALL", "ko_KR.UTF-8"))
-                .build();
-        return new ChromeDriver(service, options);
-    }
-
-    // 웹 드라이버 종료
-    private void quitDriver(WebDriver driver) {
-        if (driver == null) {
-            return;
-        }
-        try {
-            driver.quit();
-        } catch (Exception e) {
-            log.debug("WebDriver quit failed: {}", e.getMessage());
-        }
-    }
-
-    // 한글 폰트 미설치 경고
-    private void warnIfKoreanFontsMissing() {
-        try {
-            Process process = new ProcessBuilder("fc-list", ":lang=ko")
-                    .redirectErrorStream(true)
-                    .start();
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line);
-                }
-            }
-            process.waitFor(3, TimeUnit.SECONDS);
-            if (output.toString().isBlank()) {
-                log.warn(
-                        "한글 폰트가 설치되어 있지 않습니다. 캡처 이미지에서 한글이 깨질 수 있습니다. "
-                                + "해결: sudo apt install -y fonts-nanum fonts-noto-cjk fontconfig && fc-cache -fv"
-                );
-            }
-        } catch (Exception e) {
-            log.debug("Korean font check skipped: {}", e.getMessage());
-        }
     }
 
     // 댓글 대기
@@ -432,13 +313,13 @@ public class ScreenshotService {
             timer.step("comment-page-" + page + " (" + pageCapture.length + " bytes)");
             capturedPageCount++;
 
-            int currentHeight = getImageHeight(currentColumn);
-            int pageHeight = getImageHeight(pageCapture);
+            int currentHeight = ImageStitcher.getImageHeight(currentColumn);
+            int pageHeight = ImageStitcher.getImageHeight(pageCapture);
             if (currentHeight + pageHeight > MAX_STITCHED_HEIGHT) {
                 completedColumns.add(currentColumn);
                 currentColumn = pageCapture;
             } else {
-                currentColumn = appendVertically(currentColumn, pageCapture);
+                currentColumn = ImageStitcher.appendVertically(currentColumn, pageCapture);
             }
         }
         completedColumns.add(currentColumn);
@@ -455,7 +336,7 @@ public class ScreenshotService {
             result = completedColumns.get(0);
             timer.step("merge-images (single column)");
         } else {
-            result = stitchHorizontally(completedColumns);
+            result = ImageStitcher.stitchHorizontally(completedColumns);
             timer.step("merge-images (horizontal stitch, " + completedColumns.size() + " columns)");
         }
         timer.done();
@@ -625,67 +506,6 @@ public class ScreenshotService {
         return Base64.getDecoder().decode(base64);
     }
 
-    private BufferedImage readBufferedImage(byte[] pngBytes) throws IOException {
-        try (ByteArrayInputStream input = new ByteArrayInputStream(pngBytes)) {
-            BufferedImage image = ImageIO.read(input);
-            if (image == null) {
-                throw new IOException("PNG 이미지를 읽을 수 없습니다.");
-            }
-            return image;
-        }
-    }
-
-    private int getImageHeight(byte[] pngBytes) throws IOException {
-        return readBufferedImage(pngBytes).getHeight();
-    }
-
-    private byte[] appendVertically(byte[] topImage, byte[] bottomImage) throws IOException {
-        BufferedImage top = readBufferedImage(topImage);
-        BufferedImage bottom = readBufferedImage(bottomImage);
-        int totalWidth = Math.max(top.getWidth(), bottom.getWidth());
-        int totalHeight = top.getHeight() + bottom.getHeight();
-
-        BufferedImage combined = new BufferedImage(totalWidth, totalHeight, BufferedImage.TYPE_INT_RGB);
-        Graphics2D graphics = combined.createGraphics();
-        graphics.setColor(java.awt.Color.WHITE);
-        graphics.fillRect(0, 0, totalWidth, totalHeight);
-        graphics.drawImage(top, 0, 0, null);
-        graphics.drawImage(bottom, 0, top.getHeight(), null);
-        graphics.dispose();
-
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        ImageIO.write(combined, "png", output);
-        return output.toByteArray();
-    }
-
-    private byte[] stitchHorizontally(List<byte[]> columnImages) throws IOException {
-        List<BufferedImage> images = new ArrayList<>();
-        int totalWidth = 0;
-        int totalHeight = 0;
-        for (byte[] columnImage : columnImages) {
-            BufferedImage image = readBufferedImage(columnImage);
-            images.add(image);
-            totalWidth += image.getWidth();
-            totalHeight = Math.max(totalHeight, image.getHeight());
-        }
-
-        BufferedImage combined = new BufferedImage(totalWidth, totalHeight, BufferedImage.TYPE_INT_RGB);
-        Graphics2D graphics = combined.createGraphics();
-        graphics.setColor(java.awt.Color.WHITE);
-        graphics.fillRect(0, 0, totalWidth, totalHeight);
-
-        int x = 0;
-        for (BufferedImage image : images) {
-            graphics.drawImage(image, x, 0, null);
-            x += image.getWidth();
-        }
-        graphics.dispose();
-
-        ByteArrayOutputStream output = new ByteArrayOutputStream();
-        ImageIO.write(combined, "png", output);
-        return output.toByteArray();
-    }
-
     // 캡처 영역 좌표 계산
     @SuppressWarnings("unchecked")
     private Map<String, Object> resolveCaptureClipBounds(
@@ -772,59 +592,5 @@ public class ScreenshotService {
         driver.manage().window().setSize(new Dimension(CAPTURE_WINDOW_WIDTH, captureHeight));
         js.executeScript("arguments[0].scrollIntoView({block: 'start'});", captureTarget);
         TimeUnit.MILLISECONDS.sleep(300);
-    }
-
-    // Chrome 실행 파일 경로 탐지
-    private String resolveChromeBinary() {
-        if (!configuredChromeBinary.isEmpty()) {
-            Path path = Paths.get(configuredChromeBinary);
-            if (!Files.isExecutable(path)) {
-                throw new IllegalStateException("설정한 Chrome 경로를 실행할 수 없습니다: " + configuredChromeBinary);
-            }
-            return path.toAbsolutePath().toString();
-        }
-
-        List<String> candidates = List.of(
-                "/usr/bin/google-chrome-stable",
-                "/usr/bin/google-chrome",
-                "/usr/bin/chromium",
-                "/usr/bin/chromium-browser"
-        );
-
-        for (String candidate : candidates) {
-            Path path = Paths.get(candidate);
-            if (Files.isExecutable(path)) {
-                return path.toAbsolutePath().toString();
-            }
-        }
-
-        throw new IllegalStateException(
-                "Chrome/Chromium 실행 파일을 찾을 수 없습니다. "
-                        + "Google Chrome 또는 chromium-browser를 설치하거나 "
-                        + "evidence.chrome.binary 설정값을 지정하세요."
-        );
-    }
-
-    // Chrome 버전 감지
-    private String detectChromeMajorVersion(String binary) {
-        try {
-            Process process = new ProcessBuilder(binary, "--version").redirectErrorStream(true).start();
-            StringBuilder output = new StringBuilder();
-            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    output.append(line);
-                }
-            }
-            if (process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0) {
-                Matcher matcher = CHROME_VERSION_PATTERN.matcher(output.toString());
-                if (matcher.find()) {
-                    return matcher.group(1);
-                }
-            }
-        } catch (Exception e) {
-            log.warn("Chrome version detection failed: {}", e.getMessage());
-        }
-        return "";
     }
 }

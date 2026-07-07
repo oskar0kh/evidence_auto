@@ -1,10 +1,7 @@
 import { saveCapturesToDirectory } from '../crawl/captureFiles';
 import { getOrCreateLogDirectory } from '../crawl/crawlLogExport';
 import { getOrCreateSubdirectory } from '../../shared/lib/localFileStorage';
-import {
-  appendCrimeListExcel,
-  exportCrimeListExcel,
-} from '../../platforms/dcinside/excelExport';
+import { appendCrimeListExcel } from '../../platforms/dcinside/excelExport';
 import type { DcinsidePostData } from '../../platforms/dcinside/types';
 import {
   buildExcelFilename,

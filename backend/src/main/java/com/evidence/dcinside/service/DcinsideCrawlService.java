@@ -1,10 +1,11 @@
 package com.evidence.dcinside.service;
 
+import com.evidence.dcinside.DcinsideConstants;
 import com.evidence.dcinside.dto.CommentData;
 import com.evidence.dcinside.dto.DcinsidePostData;
 import com.evidence.dto.CaptureImage;
 import com.evidence.dto.TimedResult;
-import com.evidence.service.StageTimedException;
+import com.evidence.exception.StageTimedException;
 import com.evidence.util.StepTimer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -39,16 +40,6 @@ public class DcinsideCrawlService {
 
     private static final Logger log = LoggerFactory.getLogger(DcinsideCrawlService.class);
 
-    // 사용자 에이전트
-    private static final String USER_AGENT =
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-
-    // 디시인사이드 게시글 URL 패턴
-    private static final Pattern DC_URL_PATTERN = Pattern.compile(
-            "https?://(?:m\\.)?gall\\.dcinside\\.com/(?:mgallery/board|mini/board|board)/view/\\?.*"
-    );
-
-    // JSON 파서
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     private final CookieManager cookieManager = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
@@ -59,7 +50,7 @@ public class DcinsideCrawlService {
 
     // 디시인사이드 게시글 크롤링
     public TimedResult<DcinsidePostData> crawl(String url) throws Exception {
-        if (!DC_URL_PATTERN.matcher(url).find() && !url.contains("gall.dcinside.com")) {
+        if (!DcinsideConstants.isPostUrl(url)) {
             throw new IllegalArgumentException("디시인사이드 게시글 URL이 아닙니다.");
         }
 
@@ -200,7 +191,7 @@ public class DcinsideCrawlService {
     private HttpResponse<String> fetchPage(HttpClient client, String url) throws Exception {
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(url))
-                .header("User-Agent", USER_AGENT)
+                .header("User-Agent", DcinsideConstants.USER_AGENT)
                 .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
                 .header("Accept-Language", "ko-KR,ko;q=0.9")
                 .GET()
@@ -575,7 +566,7 @@ public class DcinsideCrawlService {
 
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(resolveCommentApiUrl(referer, galleryType)))
-                .header("User-Agent", USER_AGENT)
+                .header("User-Agent", DcinsideConstants.USER_AGENT)
                 .header("Accept", "application/json, text/javascript, */*; q=0.01")
                 .header("Accept-Language", "ko-KR,ko;q=0.9")
                 .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")

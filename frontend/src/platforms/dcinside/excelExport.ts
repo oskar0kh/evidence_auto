@@ -1,22 +1,20 @@
 import ExcelJS from 'exceljs';
 import { extractBodySection, extractCommentsSection } from './commentSection';
 import {
+  EXCEL_HEADER_FILL,
+  EXCEL_HEADER_FONT,
+  sanitizeExcelText,
+} from '../../shared/lib/excelUtils';
+import {
   tryReadFileFromDirectory,
   writeArrayBufferToDirectory,
 } from '../../shared/lib/localFileStorage';
 import {
-  buildExcelFilename,
   extractSerialFromCaptureFilename,
   getCaptureFilename,
   toCaptureHyperlink,
 } from '../../features/export/pathUtils';
 import type { DcinsidePostData } from './types';
-
-export interface ExportCrimeListOptions {
-  communityName: string;
-  keyword?: string;
-  stamp: string;
-}
 
 const SHEET_NAME = '범죄일람표';
 const DATA_START_ROW = 3;
@@ -40,36 +38,10 @@ const CAPTURE_COLUMN = 10;
 const THUMBNAIL_COLUMN = 11;
 const URL_COLUMN = 9;
 
-const HEADER_FILL = {
-  type: 'pattern' as const,
-  pattern: 'solid' as const,
-  fgColor: { argb: 'FF375623' },
-};
-
-const HEADER_FONT = {
-  bold: true,
-  color: { argb: 'FFFFFFFF' },
-  size: 11,
-};
-
 const MIN_ROW_HEIGHT = 24;
 const MAX_ROW_HEIGHT = 250;
 const LINE_HEIGHT_PT = 15;
 const ROW_PADDING_PT = 10;
-const EXCEL_MAX_CELL_CHARS = 32767;
-const EXCEL_TRUNCATION_SUFFIX = '\n…(이하 생략)';
-
-function sanitizeExcelText(value: unknown): string {
-  if (value == null) {
-    return '';
-  }
-  const sanitized = String(value).replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '');
-  if (sanitized.length <= EXCEL_MAX_CELL_CHARS) {
-    return sanitized;
-  }
-  const maxContentLength = EXCEL_MAX_CELL_CHARS - EXCEL_TRUNCATION_SUFFIX.length;
-  return sanitized.slice(0, maxContentLength) + EXCEL_TRUNCATION_SUFFIX;
-}
 
 function stringCellValue(value: unknown): string {
   return sanitizeExcelText(value);
@@ -218,9 +190,9 @@ function setupNewCrimeListSheet(workbook: ExcelJS.Workbook): ExcelJS.Worksheet {
   });
   headerRow.height = 28;
   headerRow.eachCell((cell) => {
-    cell.font = HEADER_FONT;
+    cell.font = EXCEL_HEADER_FONT;
     cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-    cell.fill = HEADER_FILL;
+    cell.fill = EXCEL_HEADER_FILL;
     cell.border = {
       top: { style: 'thin' },
       left: { style: 'thin' },
@@ -367,26 +339,4 @@ export async function appendCrimeListExcel(
 
   const buffer = await workbook.xlsx.writeBuffer();
   await writeArrayBufferToDirectory(directory, excelFilename, buffer as ArrayBuffer);
-}
-
-export async function exportCrimeListExcel(
-  posts: DcinsidePostData[],
-  directory: FileSystemDirectoryHandle,
-  options: ExportCrimeListOptions
-): Promise<void> {
-  const workbook = new ExcelJS.Workbook();
-  workbook.creator = '범죄일람표 크롤러';
-  const sheet = setupNewCrimeListSheet(workbook);
-
-  for (let index = 0; index < posts.length; index++) {
-    const post = posts[index];
-    const captureFilename = getCaptureFilename(post.captureFilePath);
-    const serial =
-      extractSerialFromCaptureFilename(captureFilename) ?? index + 1;
-    await writePostToSheet(workbook, sheet, post, index + DATA_START_ROW, serial);
-  }
-
-  const buffer = await workbook.xlsx.writeBuffer();
-  const filename = buildExcelFilename(options.communityName, options.keyword, options.stamp);
-  await writeArrayBufferToDirectory(directory, filename, buffer as ArrayBuffer);
 }

@@ -1,18 +1,14 @@
 import axios from 'axios';
 import { parseSseChunk } from '../../shared/lib/sse';
-import { parseSearchTerms, filterUrlsByGalleryId } from '../../features/search/searchUtils';
+import { isAbortError } from '../../shared/lib/abort';
 import type { CrawlProgressEvent, CrawlStreamResult, UrlTiming } from '../../features/crawl/types';
 import type { DcinsidePostData } from './types';
-import type { GalleryLookupResponse, SearchOptions, SearchResponse } from '../../features/search/types';
+import type { GalleryLookupResponse, SearchOptions } from '../../features/search/types';
 
 const searchApi = axios.create({
   baseURL: '/api',
   timeout: 0,
 });
-
-function isAbortError(e: unknown): boolean {
-  return e instanceof DOMException && e.name === 'AbortError';
-}
 
 async function consumeCrawlSseStream(
   response: Response,
@@ -214,26 +210,6 @@ export async function searchCrawlDcinsideStream(
   );
 }
 
-async function searchDcinside(
-  query: string,
-  options: SearchOptions = {},
-  signal?: AbortSignal
-): Promise<SearchResponse> {
-  const { maxResults = 100, startDate, endDate, galleryId } = options;
-  const { data } = await searchApi.post<SearchResponse>(
-    '/search/dcinside',
-    {
-      query,
-      maxResults,
-      startDate: startDate ?? null,
-      endDate: endDate ?? null,
-      galleryId: galleryId?.trim() || null,
-    },
-    { signal }
-  );
-  return data;
-}
-
 export async function lookupDcinsideGalleries(
   name: string,
   signal?: AbortSignal
@@ -244,60 +220,4 @@ export async function lookupDcinsideGalleries(
     { signal }
   );
   return data;
-}
-
-export interface SearchAllTermsProgress {
-  termIndex: number;
-  termTotal: number;
-  term: string;
-  collectedUrlCount: number;
-}
-
-export async function searchDcinsideAllTerms(
-  query: string,
-  options: SearchOptions = {},
-  onProgress?: (progress: SearchAllTermsProgress) => void,
-  signal?: AbortSignal
-): Promise<SearchResponse> {
-  const terms = parseSearchTerms(query);
-  if (terms.length === 0) {
-    throw new Error('검색어를 입력해 주세요.');
-  }
-
-  const merged = new Set<string>();
-  let totalSearchMs = 0;
-
-  for (let i = 0; i < terms.length; i++) {
-    if (signal?.aborted) {
-      throw new DOMException('Aborted', 'AbortError');
-    }
-
-    const term = terms[i];
-    onProgress?.({
-      termIndex: i + 1,
-      termTotal: terms.length,
-      term,
-      collectedUrlCount: merged.size,
-    });
-
-    const result = await searchDcinside(term, options, signal);
-    totalSearchMs += result.searchMs ?? 0;
-    for (const url of filterUrlsByGalleryId(result.urls, options.galleryId)) {
-      merged.add(url);
-    }
-  }
-
-  const galleryId = options.galleryId?.trim();
-  const mergedUrls = filterUrlsByGalleryId([...merged], galleryId);
-
-  return {
-    urls: mergedUrls,
-    count: mergedUrls.length,
-    searchMs: totalSearchMs,
-    dateRangeSearch: Boolean(options.startDate && options.endDate),
-    gallerySearch: Boolean(options.galleryId?.trim()),
-    galleryId: options.galleryId?.trim() || undefined,
-    startDate: options.startDate,
-    endDate: options.endDate,
-  };
 }
