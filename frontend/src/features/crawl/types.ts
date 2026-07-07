@@ -33,6 +33,8 @@ export interface UrlTiming {
 export interface CrawlLogEntry {
   executedAt: string;
   keyword?: string;
+  searchDateRange?: string;
+  galleryName?: string;
   inputMode: '검색어' | '검색어+기간' | '검색어+갤러리' | '검색어+기간+갤러리' | 'URL 직접입력';
   attemptedCount: number;
   successCount: number;

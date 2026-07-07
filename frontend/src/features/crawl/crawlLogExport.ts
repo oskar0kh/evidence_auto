@@ -8,6 +8,8 @@ const SHEET_NAME = 'crawling_log';
 const COLUMNS = [
   { header: '실행 일시', key: 'executedAt', width: 20 },
   { header: '검색어', key: 'keyword', width: 24 },
+  { header: '검색 기간', key: 'searchDateRange', width: 22 },
+  { header: '갤러리명', key: 'galleryName', width: 24 },
   { header: '수집 방식', key: 'inputMode', width: 14 },
   { header: '시도 글 개수', key: 'attemptedCount', width: 12 },
   { header: '성공 글 개수', key: 'successCount', width: 12 },
@@ -124,6 +126,8 @@ function buildRowValues(entry: CrawlLogEntry): Record<string, string | number> {
   return {
     executedAt: entry.executedAt,
     keyword: entry.keyword ?? '',
+    searchDateRange: entry.searchDateRange ?? '',
+    galleryName: entry.galleryName ?? '',
     inputMode: entry.inputMode,
     attemptedCount: entry.attemptedCount,
     successCount: entry.successCount,

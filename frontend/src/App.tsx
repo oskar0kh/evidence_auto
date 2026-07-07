@@ -154,6 +154,8 @@ interface CrawlProgress {
 
 interface CrawlLogContext {
   keyword?: string;
+  searchDateRange?: string;
+  galleryName?: string;
   inputMode: CrawlLogEntry['inputMode'];
   searchMs?: number;
 }
@@ -175,6 +177,8 @@ async function saveCrawlLog(
   const entry: CrawlLogEntry = {
     executedAt: formatExecutedAt(),
     keyword: context.keyword,
+    searchDateRange: context.searchDateRange,
+    galleryName: context.galleryName,
     inputMode: context.inputMode,
     attemptedCount,
     successCount,
@@ -446,10 +450,6 @@ export default function App() {
     const galleryLabel = gallery ? formatGalleryLabel(gallery) : undefined;
     const useGallerySearch = Boolean(galleryId);
 
-    const keywordSuffix = useDateRange ? ` (${searchStartDate}~${searchEndDate})` : '';
-    const keywordWithGallery = useGallerySearch
-      ? `${query} @${galleryLabel}${keywordSuffix}`
-      : `${query}${keywordSuffix}`;
     const inputMode = useGallerySearch
       ? useDateRange
         ? '검색어+기간+갤러리'
@@ -466,7 +466,9 @@ export default function App() {
       galleryLabel,
       useGallerySearch,
       logContext: {
-        keyword: keywordWithGallery,
+        keyword: query,
+        searchDateRange: useDateRange ? `${searchStartDate}~${searchEndDate}` : undefined,
+        galleryName: useGallerySearch ? galleryLabel : undefined,
         inputMode,
       },
       clearSearchInput: true,
