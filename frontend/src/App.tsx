@@ -60,6 +60,34 @@ function isAbortError(e: unknown): boolean {
   return e instanceof DOMException && e.name === 'AbortError';
 }
 
+const USER_CANCEL_REASON = '사용자 중도 취소';
+
+function collectProcessedUrls(response: CrawlStreamResult, processedUrls: Set<string>): void {
+  for (const post of response.data) {
+    processedUrls.add(post.url);
+  }
+  for (const error of response.errors) {
+    processedUrls.add(error.url);
+  }
+  for (const timing of response.timings ?? []) {
+    processedUrls.add(timing.url);
+  }
+}
+
+function appendUserCancelErrors(
+  urls: string[],
+  batchErrors: { url: string; error: string }[],
+  processedUrls: Set<string>
+): void {
+  const existingErrorUrls = new Set(batchErrors.map((error) => error.url));
+  for (const url of urls) {
+    if (!processedUrls.has(url) && !existingErrorUrls.has(url)) {
+      batchErrors.push({ url, error: USER_CANCEL_REASON });
+      existingErrorUrls.add(url);
+    }
+  }
+}
+
 function shortenUrl(url: string, max = 56): string {
   return url.length <= max ? url : `${url.slice(0, max)}…`;
 }
@@ -455,9 +483,11 @@ export default function App() {
 
     const batchErrors: { url: string; error: string }[] = [];
     const batchTimings: UrlTiming[] = [];
+    const processedUrls = new Set<string>();
     let successCount = 0;
     let totalFailCount = 0;
     let wasInterrupted = false;
+    let wasCancelled = false;
     let interruptMessage: string | undefined;
     let errorMessage: string | null = null;
     let autoSaved = false;
@@ -505,9 +535,13 @@ export default function App() {
         );
 
         const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
+        collectProcessedUrls(response, processedUrls);
         successCount += batchSuccess;
         totalFailCount += response.failCount ?? response.errors.length;
         wasInterrupted = Boolean(response.interrupted);
+        if (wasInterrupted) {
+          wasCancelled = true;
+        }
         interruptMessage = response.interruptMessage;
 
         if (batchResults.length > 0 && saveDirectoryRef.current) {
@@ -555,12 +589,18 @@ export default function App() {
       }
     } catch (e) {
       if (isAbortError(e)) {
+        wasCancelled = true;
         errorMessage = '크롤링이 취소됐습니다.';
       } else {
         errorMessage = resolveCrawlError(e);
         batchErrors.push({ url: '(크롤링)', error: errorMessage });
       }
     } finally {
+      if (wasCancelled) {
+        appendUserCancelErrors(urls, batchErrors, processedUrls);
+        setErrors(batchErrors);
+      }
+
       if (errorMessage) {
         if (autoSaved && !wasInterrupted) {
           errorMessage = appendAutoSaveNotice(errorMessage, totalSavedCount);
@@ -758,7 +798,7 @@ export default function App() {
               onClick={() => void handleSearchCrawl()}
               disabled={loading || !saveDirectoryPath}
             >
-              {loading ? '검색·크롤링 중…' : '입력한 검색어로 크롤링'}
+              {loading ? '검색·크롤링·캡처 중…' : '검색어 크롤링'}
             </button>
             <div className="save-cancel-group">
               <button
