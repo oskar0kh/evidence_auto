@@ -21,7 +21,7 @@ import {
   getCaptureFilename,
   toCaptureRelativePath,
 } from './features/export/pathUtils';
-import type { CrawlLogEntry, UrlTiming } from './features/crawl/types';
+import type { CrawlLogEntry, CrawlStreamResult, UrlTiming } from './features/crawl/types';
 import type { DcinsidePostData } from './platforms/dcinside/types';
 import './app/App.css';
 
@@ -166,6 +166,27 @@ async function saveCrawlLog(
   } catch (e) {
     console.error('크롤링 로그 저장 실패:', e);
   }
+}
+
+function collectCrawlResponse(
+  response: CrawlStreamResult,
+  batchErrors: { url: string; error: string }[],
+  batchTimings: UrlTiming[]
+): number {
+  batchErrors.push(...response.errors);
+  if (response.timings) {
+    batchTimings.push(...response.timings);
+  }
+  return response.data.length;
+}
+
+function formatInterruptedMessage(response: CrawlStreamResult): string {
+  const savedCount = response.data.length;
+  const base = response.interruptMessage ?? '크롤링이 중단됐습니다.';
+  if (savedCount > 0) {
+    return `${base} 완료된 ${savedCount}건은 화면에 보관됐으며, 범죄일람표·캡처화면 저장으로 보낼 수 있습니다.`;
+  }
+  return base;
 }
 
 export default function App() {
@@ -380,28 +401,33 @@ export default function App() {
 
     try {
       const startSerial = savedResults.length + 1;
-      const response = await crawlDcinsideStream(urls, startSerial, (event) => {
-        setProgress({
-          completed: event.completed,
-          total: event.total,
-          currentUrl: event.currentUrl,
-          stage: event.stage,
-          successCount: event.successCount,
-          failCount: event.failCount,
-        });
-      });
+      const response = await crawlDcinsideStream(
+        urls,
+        startSerial,
+        (event) => {
+          setProgress({
+            completed: event.completed,
+            total: event.total,
+            currentUrl: event.currentUrl,
+            stage: event.stage,
+            successCount: event.successCount,
+            failCount: event.failCount,
+          });
+        },
+        (post) => {
+          setSavedResults((prev) => mergeSavedResults(prev, [post]));
+        }
+      );
 
+      successCount = collectCrawlResponse(response, batchErrors, batchTimings);
       if (response.data.length > 0) {
-        successCount = response.data.length;
         setSavedResults((prev) => mergeSavedResults(prev, response.data));
-      }
-      batchErrors.push(...response.errors);
-      if (response.timings) {
-        batchTimings.push(...response.timings);
       }
 
       setErrors(batchErrors);
-      if (successCount === 0 && batchErrors.length > 0) {
+      if (response.interrupted) {
+        setError(formatInterruptedMessage(response));
+      } else if (successCount === 0 && batchErrors.length > 0) {
         setError('이번 요청의 모든 URL 처리에 실패했습니다.');
       }
     } catch (e) {

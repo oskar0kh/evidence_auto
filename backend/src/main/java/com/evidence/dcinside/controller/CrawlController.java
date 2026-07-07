@@ -58,7 +58,8 @@ public class CrawlController {
 
         CompletableFuture.runAsync(() -> {
             try {
-                CrawlResult result = crawlAllUrls(request, event -> sendEvent(emitter, "progress", event));
+                CrawlCallbacks callbacks = CrawlCallbacks.streaming(this, emitter);
+                CrawlResult result = crawlAllUrls(request, callbacks);
                 sendEvent(emitter, "complete", result.toBody());
                 emitter.complete();
             } catch (Exception e) {
@@ -76,7 +77,7 @@ public class CrawlController {
         return emitter;
     }
 
-    private CrawlResult crawlAllUrls(CrawlRequest request, Consumer<CrawlProgressEvent> onProgress) {
+    private CrawlResult crawlAllUrls(CrawlRequest request, CrawlCallbacks callbacks) {
         List<String> validUrls = request.urls().stream()
                 .map(url -> url == null ? "" : url.trim())
                 .filter(url -> !url.isEmpty())
@@ -92,7 +93,7 @@ public class CrawlController {
         int failCount = 0;
 
         for (String trimmed : validUrls) {
-            onProgress.accept(new CrawlProgressEvent(
+            callbacks.progress().accept(new CrawlProgressEvent(
                     completed, total, trimmed, "text-crawl", successCount, failCount
             ));
 
@@ -104,7 +105,7 @@ public class CrawlController {
                 partialTimings.add(crawled.timings());
                 timer.step("text-crawl");
 
-                onProgress.accept(new CrawlProgressEvent(
+                callbacks.progress().accept(new CrawlProgressEvent(
                         completed, total, trimmed, "screenshot", successCount, failCount
                 ));
 
@@ -117,41 +118,55 @@ public class CrawlController {
                 partialTimings.add(capture.timings());
                 timer.step("screenshot");
 
-                onProgress.accept(new CrawlProgressEvent(
+                callbacks.progress().accept(new CrawlProgressEvent(
                         completed, total, trimmed, "attach-capture", successCount, failCount
                 ));
 
-                results.add(crawlService.attachCapture(crawled.value(), capture.value()));
+                DcinsidePostData attached = crawlService.attachCapture(crawled.value(), capture.value());
+                results.add(attached);
                 timer.step("attach-capture");
 
                 StepTimings merged = StepTimings.merge(
                         partialTimings.toArray(StepTimings[]::new)
                 );
                 StepTimings withOuter = mergeWithOuter(timer.finish(), merged);
-                timings.add(new UrlTiming(trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()));
+                UrlTiming successTiming = new UrlTiming(
+                        trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()
+                );
+                timings.add(successTiming);
+                callbacks.urlResult().accept(attached);
+                callbacks.urlTiming().accept(successTiming);
 
                 successCount++;
                 completed++;
-                onProgress.accept(new CrawlProgressEvent(
+                callbacks.progress().accept(new CrawlProgressEvent(
                         completed, total, trimmed, "url-done", successCount, failCount
                 ));
             } catch (StageTimedException e) {
                 partialTimings.add(e.timings());
                 log.warn("Crawl failed for {} at {}: {}", trimmed, e.stage(), e.getMessage());
-                errors.add(errorEntry(trimmed, e));
-                timings.add(buildFailedTiming(trimmed, partialTimings, timer));
+                Map<String, String> error = errorEntry(trimmed, e);
+                errors.add(error);
+                UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
+                timings.add(failedTiming);
+                callbacks.urlError().accept(error);
+                callbacks.urlTiming().accept(failedTiming);
                 failCount++;
                 completed++;
-                onProgress.accept(new CrawlProgressEvent(
+                callbacks.progress().accept(new CrawlProgressEvent(
                         completed, total, trimmed, "url-failed", successCount, failCount
                 ));
             } catch (Exception e) {
                 log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
-                errors.add(errorEntry(trimmed, e));
-                timings.add(buildFailedTiming(trimmed, partialTimings, timer));
+                Map<String, String> error = errorEntry(trimmed, e);
+                errors.add(error);
+                UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
+                timings.add(failedTiming);
+                callbacks.urlError().accept(error);
+                callbacks.urlTiming().accept(failedTiming);
                 failCount++;
                 completed++;
-                onProgress.accept(new CrawlProgressEvent(
+                callbacks.progress().accept(new CrawlProgressEvent(
                         completed, total, trimmed, "url-failed", successCount, failCount
                 ));
             }
@@ -207,6 +222,22 @@ public class CrawlController {
             entry.put("stage", stageTimed.stage());
         }
         return entry;
+    }
+
+    private record CrawlCallbacks(
+            Consumer<CrawlProgressEvent> progress,
+            Consumer<DcinsidePostData> urlResult,
+            Consumer<Map<String, String>> urlError,
+            Consumer<UrlTiming> urlTiming
+    ) {
+        static CrawlCallbacks streaming(CrawlController controller, SseEmitter emitter) {
+            return new CrawlCallbacks(
+                    event -> controller.sendEvent(emitter, "progress", event),
+                    data -> controller.sendEvent(emitter, "url-result", data),
+                    error -> controller.sendEvent(emitter, "url-error", error),
+                    timing -> controller.sendEvent(emitter, "url-timing", timing)
+            );
+        }
     }
 
     private record CrawlResult(

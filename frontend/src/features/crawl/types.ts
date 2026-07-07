@@ -6,6 +6,11 @@ export interface CrawlResponse {
   timings?: UrlTiming[];
 }
 
+export interface CrawlStreamResult extends CrawlResponse {
+  interrupted?: boolean;
+  interruptMessage?: string;
+}
+
 export interface CrawlProgressEvent {
   completed: number;
   total: number;

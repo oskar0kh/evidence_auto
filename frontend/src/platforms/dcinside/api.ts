@@ -1,7 +1,8 @@
 import axios from 'axios';
 import { parseSseChunk } from '../../shared/lib/sse';
 import { parseSearchTerms } from '../../features/search/searchUtils';
-import type { CrawlProgressEvent, CrawlResponse } from '../../features/crawl/types';
+import type { CrawlProgressEvent, CrawlStreamResult, UrlTiming } from '../../features/crawl/types';
+import type { DcinsidePostData } from './types';
 import type { SearchOptions, SearchResponse } from '../../features/search/types';
 
 const searchApi = axios.create({
@@ -12,8 +13,9 @@ const searchApi = axios.create({
 export async function crawlDcinsideStream(
   urls: string[],
   startSerial: number | undefined,
-  onProgress: (progress: CrawlProgressEvent) => void
-): Promise<CrawlResponse> {
+  onProgress: (progress: CrawlProgressEvent) => void,
+  onUrlResult?: (post: DcinsidePostData) => void
+): Promise<CrawlStreamResult> {
   const response = await fetch('/api/crawl/dcinside/stream', {
     method: 'POST',
     headers: {
@@ -46,41 +48,96 @@ export async function crawlDcinsideStream(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
-  let finalResult: CrawlResponse | null = null;
+  let finalResult: CrawlStreamResult | null = null;
+  let interruptMessage: string | undefined;
+  const accumulated: CrawlStreamResult = {
+    data: [],
+    errors: [],
+    timings: [],
+  };
 
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) {
-      break;
+  const applySseMessage = (message: { event: string; data: string }) => {
+    if (message.event === 'progress') {
+      onProgress(JSON.parse(message.data) as CrawlProgressEvent);
+      return;
     }
 
-    buffer += decoder.decode(value, { stream: true });
+    if (message.event === 'url-result') {
+      const post = JSON.parse(message.data) as DcinsidePostData;
+      accumulated.data.push(post);
+      onUrlResult?.(post);
+      return;
+    }
+
+    if (message.event === 'url-error') {
+      accumulated.errors.push(
+        JSON.parse(message.data) as { url: string; error: string; stage?: string }
+      );
+      return;
+    }
+
+    if (message.event === 'url-timing') {
+      accumulated.timings!.push(JSON.parse(message.data) as UrlTiming);
+      return;
+    }
+
+    if (message.event === 'complete') {
+      finalResult = JSON.parse(message.data) as CrawlStreamResult;
+      return;
+    }
+
+    if (message.event === 'error') {
+      const body = JSON.parse(message.data) as { error?: string };
+      interruptMessage = body.error ?? '크롤링 중 오류가 발생했습니다.';
+    }
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+      const parsed = parseSseChunk(buffer);
+      buffer = parsed.remainder;
+
+      for (const message of parsed.messages) {
+        applySseMessage(message);
+      }
+    }
+
+    buffer += decoder.decode();
     const parsed = parseSseChunk(buffer);
-    buffer = parsed.remainder;
-
     for (const message of parsed.messages) {
-      if (message.event === 'progress') {
-        onProgress(JSON.parse(message.data) as CrawlProgressEvent);
-        continue;
-      }
-
-      if (message.event === 'complete') {
-        finalResult = JSON.parse(message.data) as CrawlResponse;
-        continue;
-      }
-
-      if (message.event === 'error') {
-        const body = JSON.parse(message.data) as { error?: string };
-        throw new Error(body.error ?? '크롤링 중 오류가 발생했습니다.');
-      }
+      applySseMessage(message);
     }
+  } catch (e) {
+    if (accumulated.data.length > 0 || accumulated.errors.length > 0) {
+      return {
+        ...accumulated,
+        interrupted: true,
+        interruptMessage:
+          e instanceof Error ? e.message : '네트워크 오류로 크롤링이 중단됐습니다.',
+      };
+    }
+    throw e;
   }
 
-  if (!finalResult) {
-    throw new Error('크롤링 결과를 받지 못했습니다.');
+  if (finalResult) {
+    return finalResult;
   }
 
-  return finalResult;
+  if (accumulated.data.length > 0 || accumulated.errors.length > 0) {
+    return {
+      ...accumulated,
+      interrupted: true,
+      interruptMessage: interruptMessage ?? '크롤링이 중단됐습니다.',
+    };
+  }
+
+  throw new Error(interruptMessage ?? '크롤링 결과를 받지 못했습니다.');
 }
 
 async function searchDcinside(
