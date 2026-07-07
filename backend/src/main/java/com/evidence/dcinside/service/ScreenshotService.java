@@ -42,6 +42,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -68,7 +69,7 @@ public class ScreenshotService {
     private final int contentWaitSeconds;
     private final boolean blockTracking;
     private final boolean captureAllCommentPages;
-    private final Object captureLock = new Object();
+    private final ReentrantLock captureLock = new ReentrantLock();
 
     private String chromeBinary;
 
@@ -98,12 +99,42 @@ public class ScreenshotService {
         log.info("Screenshot Chrome binary: {}, blockTracking={}", chromeBinary, blockTracking);
     }
 
-    // 스크린샷 캡처 (게시글~댓글 영역)
-    public TimedResult<CaptureImage> captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
-        String filename = formatFilename(excelRowNumber, postNo);
-        Path tempFile = Files.createTempFile("evidence-capture-", ".png");
+    /**
+     * 배치 크롤링 동안 Chrome을 한 번만 띄우고 URL마다 navigate·캡처합니다.
+     * try-with-resources로 닫아 Chrome과 락을 반드시 해제하세요.
+     */
+    public CaptureSession openCaptureSession() throws Exception {
+        captureLock.lock();
+        try {
+            ChromeDriver driver = createAndConfigureDriver(null);
+            log.info("Screenshot capture session opened");
+            return new CaptureSession(driver);
+        } catch (Exception e) {
+            captureLock.unlock();
+            throw e;
+        }
+    }
 
-        synchronized (captureLock) {
+    // 스크린샷 캡처 (게시글~댓글 영역, 단일 URL용)
+    public TimedResult<CaptureImage> captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
+        try (CaptureSession session = openCaptureSession()) {
+            return session.captureFullPage(url, excelRowNumber, postNo);
+        }
+    }
+
+    public final class CaptureSession implements AutoCloseable {
+
+        private ChromeDriver driver;
+        private boolean closed;
+
+        private CaptureSession(ChromeDriver driver) {
+            this.driver = driver;
+        }
+
+        public TimedResult<CaptureImage> captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
+            String filename = formatFilename(excelRowNumber, postNo);
+            Path tempFile = Files.createTempFile("evidence-capture-", ".png");
+
             Exception lastError = null;
             StepTimings lastTimings = null;
             try {
@@ -113,7 +144,8 @@ public class ScreenshotService {
                             : "screenshot " + url + " attempt=" + attempt;
                     StepTimer timer = new StepTimer(log, scope);
                     try {
-                        captureOnce(url, postNo, tempFile, timer);
+                        ensureDriver(timer);
+                        captureWithDriver(driver, url, postNo, tempFile, timer);
                         byte[] pngBytes = Files.readAllBytes(tempFile);
                         timer.step("read-temp-file (" + pngBytes.length + " bytes)");
                         StepTimings timings = timer.finish();
@@ -122,6 +154,9 @@ public class ScreenshotService {
                         lastError = e;
                         lastTimings = timer.finish();
                         log.warn("Screenshot attempt {}/{} failed for {}: {}", attempt, MAX_CAPTURE_ATTEMPTS, url, e.getMessage());
+                        if (isDriverSessionInvalid(e)) {
+                            invalidateDriver();
+                        }
                         if (attempt < MAX_CAPTURE_ATTEMPTS) {
                             TimeUnit.SECONDS.sleep(1);
                         }
@@ -143,46 +178,105 @@ public class ScreenshotService {
                 Files.deleteIfExists(tempFile);
             }
         }
+
+        @Override
+        public void close() {
+            if (closed) {
+                return;
+            }
+            closed = true;
+            try {
+                quitDriver(driver);
+                log.info("Screenshot capture session closed");
+            } finally {
+                captureLock.unlock();
+            }
+        }
+
+        private void ensureDriver(StepTimer timer) throws Exception {
+            if (driver != null && isDriverAlive(driver)) {
+                return;
+            }
+            invalidateDriver();
+            driver = createAndConfigureDriver(timer);
+        }
+
+        private void invalidateDriver() {
+            quitDriver(driver);
+            driver = null;
+        }
     }
 
-    // 스크린샷 한 번 캡처
-    private void captureOnce(String url, String postNo, Path filePath, StepTimer timer) throws Exception {
-
-        // 웹 드라이버 초기화
-        WebDriver driver = null;
-        try {
-            ChromeDriver chromeDriver = createDriver(); // 웹 드라이버 생성
+    private ChromeDriver createAndConfigureDriver(StepTimer timer) throws Exception {
+        ChromeDriver chromeDriver = createDriver();
+        if (timer != null) {
             timer.step("create-driver");
-            driver = chromeDriver;
-            if (blockTracking) {
-                TrackingDomainBlocker.apply(chromeDriver); // 광고/트래킹 도메인 차단
+        }
+        if (blockTracking) {
+            TrackingDomainBlocker.apply(chromeDriver);
+            if (timer != null) {
                 timer.step("apply-tracking-blocker");
             }
-            driver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(pageLoadTimeoutSeconds)); // 페이지 로드 타임아웃
-            driver.manage().timeouts().scriptTimeout(Duration.ofSeconds(30)); // 스크립트 타임아웃
-
-            driver.get(url); // 페이지 접속
-            timer.step("page-navigate");
-
-            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(contentWaitSeconds)); // 콘텐츠 대기
-            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("div.gallview_head")));
-            timer.step("wait-gallview-head");
-
-            waitForCommentsIfNeeded(driver, postNo); // 댓글 대기
-            timer.step("wait-comments");
-
-            // 캡처 대상 찾기
-            WebElement captureTarget = findCaptureTarget(driver, wait);
-            timer.step("find-capture-target");
-
-            byte[] pngBytes = captureWithCommentPages(chromeDriver, captureTarget, postNo);
-            timer.step("capture-images (" + pngBytes.length + " bytes)");
-            Files.write(filePath, pngBytes);
-            timer.step("write-temp-file");
-        } finally {
-            quitDriver(driver); // 웹 드라이버 종료
-            timer.step("quit-driver");
         }
+        chromeDriver.manage().timeouts().pageLoadTimeout(Duration.ofSeconds(pageLoadTimeoutSeconds));
+        chromeDriver.manage().timeouts().scriptTimeout(Duration.ofSeconds(30));
+        return chromeDriver;
+    }
+
+    private void captureWithDriver(ChromeDriver driver, String url, String postNo, Path filePath, StepTimer timer)
+            throws Exception {
+        resetBeforeCapture(driver);
+        driver.get(url);
+        timer.step("page-navigate");
+
+        WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(contentWaitSeconds));
+        wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("div.gallview_head")));
+        timer.step("wait-gallview-head");
+
+        waitForCommentsIfNeeded(driver, postNo);
+        timer.step("wait-comments");
+
+        WebElement captureTarget = findCaptureTarget(driver, wait);
+        timer.step("find-capture-target");
+
+        byte[] pngBytes = captureWithCommentPages(driver, captureTarget, postNo);
+        timer.step("capture-images (" + pngBytes.length + " bytes)");
+        Files.write(filePath, pngBytes);
+        timer.step("write-temp-file");
+    }
+
+    private void resetBeforeCapture(ChromeDriver driver) throws InterruptedException {
+        driver.manage().window().setSize(new Dimension(CAPTURE_WINDOW_WIDTH, 900));
+        ((JavascriptExecutor) driver).executeScript("window.scrollTo(0, 0);");
+        TimeUnit.MILLISECONDS.sleep(100);
+    }
+
+    private boolean isDriverAlive(WebDriver driver) {
+        if (driver == null) {
+            return false;
+        }
+        try {
+            driver.getTitle();
+            return true;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    private boolean isDriverSessionInvalid(Exception e) {
+        if (!(e instanceof org.openqa.selenium.WebDriverException)) {
+            return false;
+        }
+        String message = e.getMessage();
+        if (message == null) {
+            return false;
+        }
+        String lower = message.toLowerCase();
+        return lower.contains("invalid session")
+                || lower.contains("not reachable")
+                || lower.contains("disconnected")
+                || lower.contains("no such window")
+                || lower.contains("chrome not reachable");
     }
 
     // 캡처 파일 이름 생성

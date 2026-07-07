@@ -92,84 +92,88 @@ public class CrawlController {
         int successCount = 0;
         int failCount = 0;
 
-        for (String trimmed : validUrls) {
-            callbacks.progress().accept(new CrawlProgressEvent(
-                    completed, total, trimmed, "text-crawl", successCount, failCount
-            ));
-
-            StepTimer timer = new StepTimer(log, "crawl-url " + trimmed);
-            List<StepTimings> partialTimings = new ArrayList<>();
-
-            try {
-                TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed);
-                partialTimings.add(crawled.timings());
-                timer.step("text-crawl");
-
+        try (ScreenshotService.CaptureSession captureSession = screenshotService.openCaptureSession()) {
+            for (String trimmed : validUrls) {
                 callbacks.progress().accept(new CrawlProgressEvent(
-                        completed, total, trimmed, "screenshot", successCount, failCount
+                        completed, total, trimmed, "text-crawl", successCount, failCount
                 ));
 
-                int excelRowNumber = request.startSerial() != null
-                        ? request.startSerial() + results.size()
-                        : results.size() + 1;
-                String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
-                TimedResult<CaptureImage> capture =
-                        screenshotService.captureFullPage(trimmed, excelRowNumber, postNo);
-                partialTimings.add(capture.timings());
-                timer.step("screenshot");
+                StepTimer timer = new StepTimer(log, "crawl-url " + trimmed);
+                List<StepTimings> partialTimings = new ArrayList<>();
 
-                callbacks.progress().accept(new CrawlProgressEvent(
-                        completed, total, trimmed, "attach-capture", successCount, failCount
-                ));
+                try {
+                    TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed);
+                    partialTimings.add(crawled.timings());
+                    timer.step("text-crawl");
 
-                DcinsidePostData attached = crawlService.attachCapture(crawled.value(), capture.value());
-                results.add(attached);
-                timer.step("attach-capture");
+                    callbacks.progress().accept(new CrawlProgressEvent(
+                            completed, total, trimmed, "screenshot", successCount, failCount
+                    ));
 
-                StepTimings merged = StepTimings.merge(
-                        partialTimings.toArray(StepTimings[]::new)
-                );
-                StepTimings withOuter = mergeWithOuter(timer.finish(), merged);
-                UrlTiming successTiming = new UrlTiming(
-                        trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()
-                );
-                timings.add(successTiming);
-                callbacks.urlResult().accept(attached);
-                callbacks.urlTiming().accept(successTiming);
+                    int excelRowNumber = request.startSerial() != null
+                            ? request.startSerial() + results.size()
+                            : results.size() + 1;
+                    String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
+                    TimedResult<CaptureImage> capture =
+                            captureSession.captureFullPage(trimmed, excelRowNumber, postNo);
+                    partialTimings.add(capture.timings());
+                    timer.step("screenshot");
 
-                successCount++;
-                completed++;
-                callbacks.progress().accept(new CrawlProgressEvent(
-                        completed, total, trimmed, "url-done", successCount, failCount
-                ));
-            } catch (StageTimedException e) {
-                partialTimings.add(e.timings());
-                log.warn("Crawl failed for {} at {}: {}", trimmed, e.stage(), e.getMessage());
-                Map<String, String> error = errorEntry(trimmed, e);
-                errors.add(error);
-                UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
-                timings.add(failedTiming);
-                callbacks.urlError().accept(error);
-                callbacks.urlTiming().accept(failedTiming);
-                failCount++;
-                completed++;
-                callbacks.progress().accept(new CrawlProgressEvent(
-                        completed, total, trimmed, "url-failed", successCount, failCount
-                ));
-            } catch (Exception e) {
-                log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
-                Map<String, String> error = errorEntry(trimmed, e);
-                errors.add(error);
-                UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
-                timings.add(failedTiming);
-                callbacks.urlError().accept(error);
-                callbacks.urlTiming().accept(failedTiming);
-                failCount++;
-                completed++;
-                callbacks.progress().accept(new CrawlProgressEvent(
-                        completed, total, trimmed, "url-failed", successCount, failCount
-                ));
+                    callbacks.progress().accept(new CrawlProgressEvent(
+                            completed, total, trimmed, "attach-capture", successCount, failCount
+                    ));
+
+                    DcinsidePostData attached = crawlService.attachCapture(crawled.value(), capture.value());
+                    results.add(attached);
+                    timer.step("attach-capture");
+
+                    StepTimings merged = StepTimings.merge(
+                            partialTimings.toArray(StepTimings[]::new)
+                    );
+                    StepTimings withOuter = mergeWithOuter(timer.finish(), merged);
+                    UrlTiming successTiming = new UrlTiming(
+                            trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()
+                    );
+                    timings.add(successTiming);
+                    callbacks.urlResult().accept(attached);
+                    callbacks.urlTiming().accept(successTiming);
+
+                    successCount++;
+                    completed++;
+                    callbacks.progress().accept(new CrawlProgressEvent(
+                            completed, total, trimmed, "url-done", successCount, failCount
+                    ));
+                } catch (StageTimedException e) {
+                    partialTimings.add(e.timings());
+                    log.warn("Crawl failed for {} at {}: {}", trimmed, e.stage(), e.getMessage());
+                    Map<String, String> error = errorEntry(trimmed, e);
+                    errors.add(error);
+                    UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
+                    timings.add(failedTiming);
+                    callbacks.urlError().accept(error);
+                    callbacks.urlTiming().accept(failedTiming);
+                    failCount++;
+                    completed++;
+                    callbacks.progress().accept(new CrawlProgressEvent(
+                            completed, total, trimmed, "url-failed", successCount, failCount
+                    ));
+                } catch (Exception e) {
+                    log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
+                    Map<String, String> error = errorEntry(trimmed, e);
+                    errors.add(error);
+                    UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
+                    timings.add(failedTiming);
+                    callbacks.urlError().accept(error);
+                    callbacks.urlTiming().accept(failedTiming);
+                    failCount++;
+                    completed++;
+                    callbacks.progress().accept(new CrawlProgressEvent(
+                            completed, total, trimmed, "url-failed", successCount, failCount
+                    ));
+                }
             }
+        } catch (Exception e) {
+            throw new IllegalStateException("스크린샷 세션을 시작할 수 없습니다: " + e.getMessage(), e);
         }
 
         return new CrawlResult(results, errors, timings);
