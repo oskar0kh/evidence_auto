@@ -35,6 +35,36 @@ export async function writeArrayBufferToDirectory(
   await writeBlobToDirectory(handle, filename, new Blob([buffer]));
 }
 
+/** src 디렉터리의 파일들을 dst 디렉터리로 복사한다(하위 폴더는 무시). */
+export async function copyDirectoryFiles(
+  src: FileSystemDirectoryHandle,
+  dst: FileSystemDirectoryHandle
+): Promise<void> {
+  await assertWritableDirectory(src);
+  await assertWritableDirectory(dst);
+  for await (const handle of (src as unknown as {
+    values(): AsyncIterableIterator<FileSystemHandle>;
+  }).values()) {
+    if (handle.kind !== 'file') {
+      continue;
+    }
+    const fileHandle = await src.getFileHandle(handle.name);
+    const file = await fileHandle.getFile();
+    const writable = await (await dst.getFileHandle(handle.name, { create: true })).createWritable();
+    await writable.write(file);
+    await writable.close();
+  }
+}
+
+/** 부모 디렉터리에서 하위 폴더(및 내부 전체)를 삭제한다. */
+export async function removeSubdirectory(
+  parent: FileSystemDirectoryHandle,
+  name: string
+): Promise<void> {
+  await assertWritableDirectory(parent);
+  await parent.removeEntry(name, { recursive: true });
+}
+
 export async function tryReadFileFromDirectory(
   handle: FileSystemDirectoryHandle,
   filename: string
