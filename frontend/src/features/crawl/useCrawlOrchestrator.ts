@@ -2,7 +2,11 @@ import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
 import { crawlDcinsideStream, lookupDcinsideGalleries, searchCrawlDcinsideStream } from '../../platforms/dcinside/api';
 import { filterUrlsByGalleryId } from '../search/searchUtils';
-import { persistCrimeListAndCaptures, type CrawlPersistSession } from '../export/persistResults';
+import {
+  finalizeCrawlPersistSession,
+  persistCrimeListAndCaptures,
+  type CrawlPersistSession,
+} from '../export/persistResults';
 import { CRAWL_BATCH_SIZE, RESULTS_PAGE_SIZE, chunkArray } from './constants';
 import {
   collectCrawlResponse,
@@ -255,6 +259,17 @@ export function useCrawlOrchestrator() {
         setErrors(batchErrors);
       }
     } finally {
+      if (persistSession) {
+        try {
+          await finalizeCrawlPersistSession(persistSession);
+        } catch (e) {
+          const flushMessage =
+            e instanceof Error ? e.message : '저장 마무리 중 오류가 발생했습니다.';
+          errorMessage = errorMessage
+            ? `${errorMessage} (저장 마무리 실패: ${flushMessage})`
+            : `저장 마무리 실패: ${flushMessage}`;
+        }
+      }
       if (wasCancelled) {
         for (const err of batchErrors) {
           processedUrls.add(err.url);
@@ -456,6 +471,17 @@ export function useCrawlOrchestrator() {
         batchErrors.push({ url: '(크롤링)', error: errorMessage });
       }
     } finally {
+      if (persistSession) {
+        try {
+          await finalizeCrawlPersistSession(persistSession);
+        } catch (e) {
+          const flushMessage =
+            e instanceof Error ? e.message : '저장 마무리 중 오류가 발생했습니다.';
+          errorMessage = errorMessage
+            ? `${errorMessage} (저장 마무리 실패: ${flushMessage})`
+            : `저장 마무리 실패: ${flushMessage}`;
+        }
+      }
       const messages = resolveCrawlMessages({
         wasCancelled,
         wasInterrupted,

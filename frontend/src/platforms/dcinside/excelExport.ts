@@ -6,10 +6,6 @@ import {
   sanitizeExcelText,
 } from '../../shared/lib/excelUtils';
 import {
-  tryReadFileFromDirectory,
-  writeArrayBufferToDirectory,
-} from '../../shared/lib/localFileStorage';
-import {
   extractSerialFromCaptureFilename,
   getCaptureFilename,
   toCaptureHyperlink,
@@ -135,29 +131,6 @@ function fitThumbnailToPngBase64(
   };
 }
 
-function getUrlFromRow(sheet: ExcelJS.Worksheet, rowIndex: number): string {
-  const cellValue = sheet.getRow(rowIndex).getCell(URL_COLUMN).value;
-  if (cellValue && typeof cellValue === 'object' && 'text' in cellValue) {
-    return String((cellValue as { text: string }).text).trim();
-  }
-  return String(cellValue ?? '').trim();
-}
-
-function findRowIndexByUrl(sheet: ExcelJS.Worksheet, url: string): number | null {
-  const normalized = url.trim();
-  if (!normalized) {
-    return null;
-  }
-
-  const lastRow = sheet.lastRow?.number ?? DATA_START_ROW - 1;
-  for (let rowIndex = DATA_START_ROW; rowIndex <= lastRow; rowIndex++) {
-    if (getUrlFromRow(sheet, rowIndex) === normalized) {
-      return rowIndex;
-    }
-  }
-  return null;
-}
-
 function getNextDataRow(sheet: ExcelJS.Worksheet): number {
   const lastRow = sheet.lastRow?.number ?? DATA_START_ROW - 1;
   for (let rowIndex = lastRow; rowIndex >= DATA_START_ROW; rowIndex--) {
@@ -204,22 +177,11 @@ function setupNewCrimeListSheet(workbook: ExcelJS.Workbook): ExcelJS.Worksheet {
   return sheet;
 }
 
-async function loadOrCreateCrimeListWorkbook(
-  directory: FileSystemDirectoryHandle,
-  filename: string
-): Promise<{ workbook: ExcelJS.Workbook; sheet: ExcelJS.Worksheet }> {
+export function createCrimeListWorkbook(): {
+  workbook: ExcelJS.Workbook;
+  sheet: ExcelJS.Worksheet;
+} {
   const workbook = new ExcelJS.Workbook();
-  const existing = await tryReadFileFromDirectory(directory, filename);
-
-  if (existing) {
-    await workbook.xlsx.load(existing);
-    const sheet = workbook.getWorksheet(SHEET_NAME) ?? workbook.worksheets[0];
-    if (!sheet) {
-      throw new Error('기존 범죄일람표 파일을 읽을 수 없습니다.');
-    }
-    return { workbook, sheet };
-  }
-
   workbook.creator = '범죄일람표 크롤러';
   const sheet = setupNewCrimeListSheet(workbook);
   return { workbook, sheet };
@@ -316,27 +278,23 @@ async function writePostToSheet(
   }
 }
 
-export async function appendCrimeListExcel(
-  posts: DcinsidePostData[],
-  directory: FileSystemDirectoryHandle,
-  excelFilename: string
+/** 메모리에 유지 중인 워크북에 게시글 한 건을 새 행으로 추가한다(중복 검사는 호출부 책임). */
+export async function addPostRowToWorkbook(
+  workbook: ExcelJS.Workbook,
+  sheet: ExcelJS.Worksheet,
+  post: DcinsidePostData
 ): Promise<void> {
-  if (posts.length === 0) {
-    return;
-  }
+  const captureFilename = getCaptureFilename(post.captureFilePath);
+  const serial =
+    extractSerialFromCaptureFilename(captureFilename) ??
+    getNextDataRow(sheet) - DATA_START_ROW + 1;
+  const rowIndex = getNextDataRow(sheet);
+  await writePostToSheet(workbook, sheet, post, rowIndex, serial);
+}
 
-  const { workbook, sheet } = await loadOrCreateCrimeListWorkbook(directory, excelFilename);
-
-  for (const post of posts) {
-    const captureFilename = getCaptureFilename(post.captureFilePath);
-    const serial =
-      extractSerialFromCaptureFilename(captureFilename) ??
-      getNextDataRow(sheet) - DATA_START_ROW + 1;
-    const existingRow = findRowIndexByUrl(sheet, post.url);
-    const rowIndex = existingRow ?? getNextDataRow(sheet);
-    await writePostToSheet(workbook, sheet, post, rowIndex, serial);
-  }
-
+export async function serializeCrimeListWorkbook(
+  workbook: ExcelJS.Workbook
+): Promise<ArrayBuffer> {
   const buffer = await workbook.xlsx.writeBuffer();
-  await writeArrayBufferToDirectory(directory, excelFilename, buffer as ArrayBuffer);
+  return buffer as ArrayBuffer;
 }

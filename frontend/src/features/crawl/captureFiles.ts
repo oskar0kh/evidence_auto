@@ -1,6 +1,6 @@
 import type { DcinsidePostData } from '../../platforms/dcinside/types';
-import { getCaptureFilename, SCREENSHOT_DIR } from '../../features/export/pathUtils';
-import { getOrCreateSubdirectory, writeBlobToDirectory } from '../../shared/lib/localFileStorage';
+import { getCaptureFilename } from '../../features/export/pathUtils';
+import { writeBlobToDirectory } from '../../shared/lib/localFileStorage';
 
 function base64ToBlob(base64: string): Blob {
   const binary = atob(base64);
@@ -11,24 +11,20 @@ function base64ToBlob(base64: string): Blob {
   return new Blob([bytes], { type: 'image/png' });
 }
 
-export async function saveCapturesToDirectory(
-  directory: FileSystemDirectoryHandle,
-  posts: DcinsidePostData[]
+export async function saveCaptureToScreenshotDir(
+  screenshotDir: FileSystemDirectoryHandle,
+  post: DcinsidePostData
 ): Promise<void> {
-  const screenshotDir = await getOrCreateSubdirectory(directory, SCREENSHOT_DIR);
-
-  for (const post of posts) {
-    if (!post.captureImageBase64) {
-      if (!post.captureFilePath) {
-        throw new Error(`캡처 이미지가 없습니다: ${post.url}`);
-      }
-      continue;
-    }
+  if (!post.captureImageBase64) {
     if (!post.captureFilePath) {
       throw new Error(`캡처 이미지가 없습니다: ${post.url}`);
     }
-    const filename = getCaptureFilename(post.captureFilePath);
-    const blob = base64ToBlob(post.captureImageBase64);
-    await writeBlobToDirectory(screenshotDir, filename, blob);
+    return;
   }
+  if (!post.captureFilePath) {
+    throw new Error(`캡처 이미지가 없습니다: ${post.url}`);
+  }
+  const filename = getCaptureFilename(post.captureFilePath);
+  const blob = base64ToBlob(post.captureImageBase64);
+  await writeBlobToDirectory(screenshotDir, filename, blob);
 }

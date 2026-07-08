@@ -9,8 +9,8 @@ export function formatTimestamp(date = new Date()): string {
   return `${date.getFullYear()}${String(date.getMonth() + 1).padStart(2, '0')}${String(date.getDate()).padStart(2, '0')}_${String(date.getHours()).padStart(2, '0')}${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
-export function buildResultFolderName(stamp: string): string {
-  return `결과물_${stamp}`;
+export function buildResultFolderName(stamp: string, part?: number): string {
+  return part && part > 0 ? `결과물_${stamp}_${part}` : `결과물_${stamp}`;
 }
 
 export function sanitizeFilenamePart(value: string): string {
@@ -20,14 +20,16 @@ export function sanitizeFilenamePart(value: string): string {
 export function buildExcelFilename(
   communityName: string,
   keyword: string | undefined,
-  stamp: string
+  stamp: string,
+  part?: number
 ): string {
   const community = sanitizeFilenamePart(communityName);
   const trimmedKeyword = keyword?.trim();
+  const suffix = part && part > 0 ? `_${stamp}_${part}` : `_${stamp}`;
   if (trimmedKeyword) {
-    return `범죄일람표_${community}_${sanitizeFilenamePart(trimmedKeyword)}_${stamp}.xlsx`;
+    return `범죄일람표_${community}_${sanitizeFilenamePart(trimmedKeyword)}${suffix}.xlsx`;
   }
-  return `범죄일람표_${community}_${stamp}.xlsx`;
+  return `범죄일람표_${community}${suffix}.xlsx`;
 }
 
 /** 캡처 PNG가 Screenshot 하위 폴더에 있을 때 엑셀과 같은 결과물 폴더 기준 상대 경로 */
