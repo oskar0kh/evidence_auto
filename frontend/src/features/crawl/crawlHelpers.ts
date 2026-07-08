@@ -54,6 +54,17 @@ export function formatHealthLabel(health: CrawlHealthEvent | null | undefined): 
   if (!health) {
     return null;
   }
+  if (health.message) {
+    if (health.message.includes('보호 모드 해제')) {
+      return health.message;
+    }
+    if (health.message.includes('보호 모드')) {
+      return health.message;
+    }
+    if (health.message.includes('재시도')) {
+      return health.message;
+    }
+  }
   if (health.protectiveMode) {
     if (health.preferBrowser) {
       return `차단 감지 · 보호 모드(${health.currentPhaseLabel}) · 연속 실패 ${health.consecutiveFailures}회`;

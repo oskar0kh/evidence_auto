@@ -25,6 +25,7 @@ import com.evidence.util.StepTimer;
 import com.evidence.util.StepTimings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -58,6 +59,8 @@ public class CrawlController {
     private final DcinsideFetchEscalator fetchEscalator;
     private final DcinsideHttpClient httpClient;
     private final CrawlThrottle crawlThrottle;
+    private final int urlRetryMaxAttempts;
+    private final int urlProtectiveRetryMaxAttempts;
 
     public CrawlController(
             DcinsideCrawlService crawlService,
@@ -65,7 +68,9 @@ public class CrawlController {
             ScreenshotService screenshotService,
             DcinsideFetchEscalator fetchEscalator,
             DcinsideHttpClient httpClient,
-            CrawlThrottle crawlThrottle
+            CrawlThrottle crawlThrottle,
+            @Value("${evidence.crawl.url-retry-max-attempts:2}") int urlRetryMaxAttempts,
+            @Value("${evidence.crawl.url-protective-retry-max-attempts:2}") int urlProtectiveRetryMaxAttempts
     ) {
         this.crawlService = crawlService;
         this.searchService = searchService;
@@ -73,6 +78,8 @@ public class CrawlController {
         this.fetchEscalator = fetchEscalator;
         this.httpClient = httpClient;
         this.crawlThrottle = crawlThrottle;
+        this.urlRetryMaxAttempts = Math.max(1, urlRetryMaxAttempts);
+        this.urlProtectiveRetryMaxAttempts = Math.max(1, urlProtectiveRetryMaxAttempts);
     }
 
     @PostMapping(value = "/dcinside/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -216,84 +223,140 @@ public class CrawlController {
                 state.completed, state.total, trimmed, "text-crawl", state.successCount, state.failCount
         ));
 
+        boolean wasProtective = health.isProtectiveMode();
+        Exception lastFailure = null;
+        List<StepTimings> lastPartialTimings = new ArrayList<>();
+        StepTimer lastTimer = new StepTimer(log, "crawl-url " + trimmed);
+
+        for (int attempt = 1; attempt <= urlRetryMaxAttempts; attempt++) {
+            if (attempt > 1) {
+                sleepBeforeRequestQuietly(health);
+                emitHealth(callbacks, health, "Fast Mode 재시도 " + attempt + "/" + urlRetryMaxAttempts);
+            }
+            try {
+                tryProcessUrlOnce(trimmed, state, captureSession, callbacks, health);
+                health.recordSuccess(health.currentPhase());
+                if (wasProtective && !health.isProtectiveMode()) {
+                    emitHealth(callbacks, health, "보호 모드 해제 → Fast Mode 복귀");
+                } else {
+                    emitHealth(callbacks, health, null);
+                }
+                return;
+            } catch (StageTimedException e) {
+                lastFailure = e;
+                lastPartialTimings = new ArrayList<>(List.of(e.timings()));
+                lastTimer = new StepTimer(log, "crawl-url " + trimmed);
+                log.warn("Fast crawl attempt {}/{} failed for {} at {}: {}",
+                        attempt, urlRetryMaxAttempts, trimmed, e.stage(), e.getMessage());
+            } catch (Exception e) {
+                lastFailure = e;
+                lastPartialTimings = new ArrayList<>();
+                lastTimer = new StepTimer(log, "crawl-url " + trimmed);
+                log.warn("Fast crawl attempt {}/{} failed for {}: {}",
+                        attempt, urlRetryMaxAttempts, trimmed, e.getMessage());
+            }
+        }
+
+        health.activateProtectiveMode();
+        emitHealth(callbacks, health, "Fast Mode 실패 → 보호 모드로 재시도");
+
+        for (int attempt = 1; attempt <= urlProtectiveRetryMaxAttempts; attempt++) {
+            sleepBeforeRequestQuietly(health);
+            emitHealth(callbacks, health, "보호 모드 재시도 " + attempt + "/" + urlProtectiveRetryMaxAttempts);
+            try {
+                tryProcessUrlOnce(trimmed, state, captureSession, callbacks, health);
+                health.recordSuccess(health.currentPhase());
+                if (!health.isProtectiveMode()) {
+                    emitHealth(callbacks, health, "보호 모드 해제 → Fast Mode 복귀");
+                } else {
+                    emitHealth(callbacks, health, null);
+                }
+                return;
+            } catch (StageTimedException e) {
+                lastFailure = e;
+                lastPartialTimings = new ArrayList<>(List.of(e.timings()));
+                lastTimer = new StepTimer(log, "crawl-url " + trimmed);
+                log.warn("Protective crawl attempt {}/{} failed for {} at {}: {}",
+                        attempt, urlProtectiveRetryMaxAttempts, trimmed, e.stage(), e.getMessage());
+            } catch (Exception e) {
+                lastFailure = e;
+                lastPartialTimings = new ArrayList<>();
+                lastTimer = new StepTimer(log, "crawl-url " + trimmed);
+                log.warn("Protective crawl attempt {}/{} failed for {}: {}",
+                        attempt, urlProtectiveRetryMaxAttempts, trimmed, e.getMessage());
+            }
+        }
+
+        health.recordFailure(BlockSignal.HTTP_ERROR, health.currentPhase());
+        Map<String, String> error = lastFailure instanceof StageTimedException stageTimed
+                ? errorEntry(trimmed, stageTimed)
+                : errorEntry(trimmed, lastFailure);
+        UrlTiming failedTiming = buildFailedTiming(trimmed, lastPartialTimings, lastTimer);
+        callbacks.urlError().accept(error);
+        callbacks.urlTiming().accept(failedTiming);
+        emitHealth(callbacks, health, lastFailure != null ? lastFailure.getMessage() : "크롤 실패");
+        state.failCount++;
+        state.completed++;
+        callbacks.progress().accept(new CrawlProgressEvent(
+                state.completed, state.total, trimmed, "url-failed", state.successCount, state.failCount
+        ));
+    }
+
+    private void tryProcessUrlOnce(
+            String trimmed,
+            CrawlState state,
+            ScreenshotService.CaptureSession captureSession,
+            CrawlCallbacks callbacks,
+            CrawlHealthTracker health
+    ) throws Exception {
         StepTimer timer = new StepTimer(log, "crawl-url " + trimmed);
         List<StepTimings> partialTimings = new ArrayList<>();
 
-        try {
-            captureSession.setRelaxBlockTracking(health.shouldRelaxBlockTracking());
-            FetchedPage fetchedPage = fetchEscalator.fetchPostPage(trimmed, health, captureSession);
-            emitHealth(callbacks, health, null);
+        captureSession.setRelaxBlockTracking(health.shouldRelaxBlockTracking());
+        FetchedPage fetchedPage = fetchEscalator.fetchPostPage(trimmed, health, captureSession);
 
-            TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed, fetchedPage, health);
-            partialTimings.add(crawled.timings());
-            timer.step("text-crawl");
+        TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed, fetchedPage, health);
+        partialTimings.add(crawled.timings());
+        timer.step("text-crawl");
 
-            callbacks.progress().accept(new CrawlProgressEvent(
-                    state.completed, state.total, trimmed, "screenshot", state.successCount, state.failCount
-            ));
+        callbacks.progress().accept(new CrawlProgressEvent(
+                state.completed, state.total, trimmed, "screenshot", state.successCount, state.failCount
+        ));
 
-            int excelRowNumber = state.nextSerial++;
-            String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
-            boolean skipNavigate = fetchedPage.phase() == FetchPhase.BROWSER;
-            TimedResult<CaptureImage> capture = captureSession.captureFullPage(
-                    trimmed,
-                    excelRowNumber,
-                    postNo,
-                    skipNavigate
-            );
-            partialTimings.add(capture.timings());
-            timer.step("screenshot");
+        int excelRowNumber = state.nextSerial++;
+        String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
+        boolean skipNavigate = fetchedPage.phase() == FetchPhase.BROWSER;
+        TimedResult<CaptureImage> capture = captureSession.captureFullPage(
+                trimmed,
+                excelRowNumber,
+                postNo,
+                skipNavigate
+        );
+        partialTimings.add(capture.timings());
+        timer.step("screenshot");
 
-            callbacks.progress().accept(new CrawlProgressEvent(
-                    state.completed, state.total, trimmed, "attach-capture", state.successCount, state.failCount
-            ));
+        callbacks.progress().accept(new CrawlProgressEvent(
+                state.completed, state.total, trimmed, "attach-capture", state.successCount, state.failCount
+        ));
 
-            DcinsidePostData attached = crawlService.attachCapture(crawled.value(), capture.value());
-            timer.step("attach-capture");
+        DcinsidePostData attached = crawlService.attachCapture(crawled.value(), capture.value());
+        timer.step("attach-capture");
 
-            StepTimings merged = StepTimings.merge(
-                    partialTimings.toArray(StepTimings[]::new)
-            );
-            StepTimings withOuter = mergeWithOuter(timer.finish(), merged);
-            UrlTiming successTiming = new UrlTiming(
-                    trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()
-            );
-            callbacks.urlResult().accept(attached);
-            callbacks.urlTiming().accept(successTiming);
+        StepTimings merged = StepTimings.merge(
+                partialTimings.toArray(StepTimings[]::new)
+        );
+        StepTimings withOuter = mergeWithOuter(timer.finish(), merged);
+        UrlTiming successTiming = new UrlTiming(
+                trimmed, true, withOuter.totalMs(), withOuter.normalizedSteps()
+        );
+        callbacks.urlResult().accept(attached);
+        callbacks.urlTiming().accept(successTiming);
 
-            state.successCount++;
-            state.completed++;
-            callbacks.progress().accept(new CrawlProgressEvent(
-                    state.completed, state.total, trimmed, "url-done", state.successCount, state.failCount
-            ));
-        } catch (StageTimedException e) {
-            partialTimings.add(e.timings());
-            log.warn("Crawl failed for {} at {}: {}", trimmed, e.stage(), e.getMessage());
-            health.recordFailure(BlockSignal.HTTP_ERROR, health.currentPhase());
-            Map<String, String> error = errorEntry(trimmed, e);
-            UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
-            callbacks.urlError().accept(error);
-            callbacks.urlTiming().accept(failedTiming);
-            emitHealth(callbacks, health, e.getMessage());
-            state.failCount++;
-            state.completed++;
-            callbacks.progress().accept(new CrawlProgressEvent(
-                    state.completed, state.total, trimmed, "url-failed", state.successCount, state.failCount
-            ));
-        } catch (Exception e) {
-            log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
-            health.recordFailure(BlockSignal.HTTP_ERROR, health.currentPhase());
-            Map<String, String> error = errorEntry(trimmed, e);
-            UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
-            callbacks.urlError().accept(error);
-            callbacks.urlTiming().accept(failedTiming);
-            emitHealth(callbacks, health, e.getMessage());
-            state.failCount++;
-            state.completed++;
-            callbacks.progress().accept(new CrawlProgressEvent(
-                    state.completed, state.total, trimmed, "url-failed", state.successCount, state.failCount
-            ));
-        }
+        state.successCount++;
+        state.completed++;
+        callbacks.progress().accept(new CrawlProgressEvent(
+                state.completed, state.total, trimmed, "url-done", state.successCount, state.failCount
+        ));
     }
 
     private void emitHealth(CrawlCallbacks callbacks, CrawlHealthTracker health, String message) {

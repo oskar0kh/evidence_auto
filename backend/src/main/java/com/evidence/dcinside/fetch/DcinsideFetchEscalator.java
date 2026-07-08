@@ -23,21 +23,28 @@ public class DcinsideFetchEscalator {
     private final boolean escalationEnabled;
     private final int consecutiveFailThreshold;
     private final boolean preferBrowserAfterThreshold;
+    private final int protectiveSuccessesToRelease;
 
     public DcinsideFetchEscalator(
             DcinsideHttpClient httpClient,
             @Value("${evidence.crawl.escalation.enabled:true}") boolean escalationEnabled,
             @Value("${evidence.crawl.escalation.consecutive-fail-threshold:3}") int consecutiveFailThreshold,
-            @Value("${evidence.crawl.escalation.prefer-browser-after-threshold:true}") boolean preferBrowserAfterThreshold
+            @Value("${evidence.crawl.escalation.prefer-browser-after-threshold:true}") boolean preferBrowserAfterThreshold,
+            @Value("${evidence.crawl.protective-successes-to-release:5}") int protectiveSuccessesToRelease
     ) {
         this.httpClient = httpClient;
         this.escalationEnabled = escalationEnabled;
         this.consecutiveFailThreshold = Math.max(1, consecutiveFailThreshold);
         this.preferBrowserAfterThreshold = preferBrowserAfterThreshold;
+        this.protectiveSuccessesToRelease = Math.max(1, protectiveSuccessesToRelease);
     }
 
     public CrawlHealthTracker newHealthTracker() {
-        return new CrawlHealthTracker(consecutiveFailThreshold, preferBrowserAfterThreshold);
+        return new CrawlHealthTracker(
+                consecutiveFailThreshold,
+                preferBrowserAfterThreshold,
+                protectiveSuccessesToRelease
+        );
     }
 
     public FetchedPage fetchPostPage(

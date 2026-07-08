@@ -7,22 +7,30 @@ public class CrawlHealthTracker {
 
     private final int consecutiveFailThreshold;
     private final boolean preferBrowserAfterThreshold;
+    private final int protectiveSuccessesToRelease;
 
     private FetchPhase currentPhase = FetchPhase.HTTP_DESKTOP;
     private int consecutiveFailures;
+    private int consecutiveSuccesses;
     private BlockSignal lastBlockSignal;
     private boolean preferBrowser;
     private boolean relaxBlockTracking;
     private boolean protectiveMode;
 
-    public CrawlHealthTracker(int consecutiveFailThreshold, boolean preferBrowserAfterThreshold) {
+    public CrawlHealthTracker(
+            int consecutiveFailThreshold,
+            boolean preferBrowserAfterThreshold,
+            int protectiveSuccessesToRelease
+    ) {
         this.consecutiveFailThreshold = consecutiveFailThreshold;
         this.preferBrowserAfterThreshold = preferBrowserAfterThreshold;
+        this.protectiveSuccessesToRelease = Math.max(1, protectiveSuccessesToRelease);
     }
 
     public void reset() {
         currentPhase = FetchPhase.HTTP_DESKTOP;
         consecutiveFailures = 0;
+        consecutiveSuccesses = 0;
         lastBlockSignal = null;
         preferBrowser = false;
         relaxBlockTracking = false;
@@ -33,7 +41,10 @@ public class CrawlHealthTracker {
         currentPhase = phase;
         consecutiveFailures = 0;
         lastBlockSignal = null;
-        // protectiveMode는 배치가 끝날 때까지 유지 (한번 차단되면 이후 URL도 보호 모드)
+        consecutiveSuccesses++;
+        if (protectiveMode && consecutiveSuccesses >= protectiveSuccessesToRelease) {
+            deactivateProtectiveMode();
+        }
     }
 
     public void recordFailure(BlockSignal signal, FetchPhase phase) {
@@ -41,6 +52,7 @@ public class CrawlHealthTracker {
         currentPhase = phase;
         lastBlockSignal = signal;
         consecutiveFailures++;
+        consecutiveSuccesses = 0;
         if (preferBrowserAfterThreshold && consecutiveFailures >= consecutiveFailThreshold) {
             preferBrowser = true;
             relaxBlockTracking = true;
@@ -60,7 +72,28 @@ public class CrawlHealthTracker {
     }
 
     public void activateProtectiveMode() {
-        protectiveMode = true;
+        if (!protectiveMode) {
+            protectiveMode = true;
+            consecutiveSuccesses = 0;
+        }
+    }
+
+    public void deactivateProtectiveMode() {
+        protectiveMode = false;
+        preferBrowser = false;
+        relaxBlockTracking = false;
+        consecutiveSuccesses = 0;
+        consecutiveFailures = 0;
+        lastBlockSignal = null;
+        currentPhase = FetchPhase.HTTP_DESKTOP;
+    }
+
+    public int consecutiveSuccesses() {
+        return consecutiveSuccesses;
+    }
+
+    public int protectiveSuccessesToRelease() {
+        return protectiveSuccessesToRelease;
     }
 
     public FetchPhase currentPhase() {
