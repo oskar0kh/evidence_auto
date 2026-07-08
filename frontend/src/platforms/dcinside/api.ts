@@ -10,10 +10,12 @@ const searchApi = axios.create({
   timeout: 0,
 });
 
+type UrlResultHandler = (post: DcinsidePostData) => void | Promise<void>;
+
 async function consumeCrawlSseStream(
   response: Response,
   onProgress: (progress: CrawlProgressEvent) => void,
-  onUrlResult?: (post: DcinsidePostData) => void
+  onUrlResult?: UrlResultHandler
 ): Promise<CrawlStreamResult> {
   if (!response.body) {
     throw new Error('스트리밍 응답을 받지 못했습니다.');
@@ -30,7 +32,7 @@ async function consumeCrawlSseStream(
     timings: [],
   };
 
-  const applySseMessage = (message: { event: string; data: string }) => {
+  const applySseMessage = async (message: { event: string; data: string }) => {
     if (message.event === 'progress') {
       onProgress(JSON.parse(message.data) as CrawlProgressEvent);
       return;
@@ -39,7 +41,7 @@ async function consumeCrawlSseStream(
     if (message.event === 'url-result') {
       const post = JSON.parse(message.data) as DcinsidePostData;
       accumulated.data.push(post);
-      onUrlResult?.(post);
+      await onUrlResult?.(post);
       return;
     }
 
@@ -88,14 +90,14 @@ async function consumeCrawlSseStream(
       buffer = parsed.remainder;
 
       for (const message of parsed.messages) {
-        applySseMessage(message);
+        await applySseMessage(message);
       }
     }
 
     buffer += decoder.decode();
     const parsed = parseSseChunk(buffer);
     for (const message of parsed.messages) {
-      applySseMessage(message);
+      await applySseMessage(message);
     }
   } catch (e) {
     if (isAbortError(e)) {
@@ -135,7 +137,7 @@ async function postCrawlStream(
   endpoint: string,
   body: Record<string, unknown>,
   onProgress: (progress: CrawlProgressEvent) => void,
-  onUrlResult?: (post: DcinsidePostData) => void,
+  onUrlResult?: UrlResultHandler,
   signal?: AbortSignal
 ): Promise<CrawlStreamResult> {
   const response = await fetch(endpoint, {
@@ -168,7 +170,7 @@ export async function crawlDcinsideStream(
   urls: string[],
   startSerial: number | undefined,
   onProgress: (progress: CrawlProgressEvent) => void,
-  onUrlResult?: (post: DcinsidePostData) => void,
+  onUrlResult?: UrlResultHandler,
   signal?: AbortSignal,
   galleryId?: string
 ): Promise<CrawlStreamResult> {
@@ -190,7 +192,7 @@ export async function searchCrawlDcinsideStream(
   options: SearchOptions = {},
   startSerial: number | undefined,
   onProgress: (progress: CrawlProgressEvent) => void,
-  onUrlResult?: (post: DcinsidePostData) => void,
+  onUrlResult?: UrlResultHandler,
   signal?: AbortSignal
 ): Promise<CrawlStreamResult> {
   const { maxResults = 100, startDate, endDate, galleryId } = options;
