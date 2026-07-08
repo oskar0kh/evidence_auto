@@ -278,15 +278,21 @@ async function writePostToSheet(
   }
 }
 
-/** 메모리에 유지 중인 워크북에 게시글 한 건을 새 행으로 추가한다(중복 검사는 호출부 책임). */
+/**
+ * 메모리에 유지 중인 워크북에 게시글 한 건을 새 행으로 추가한다(중복 검사는 호출부 책임).
+ * 연번은 캡처 파일명(연번 NNN)에서 우선 읽고, 없으면 fallbackSerial(전역 연번)을 사용한다.
+ * fallbackSerial이 없을 때만 시트 내 위치 기준(1부터)으로 계산한다.
+ */
 export async function addPostRowToWorkbook(
   workbook: ExcelJS.Workbook,
   sheet: ExcelJS.Worksheet,
-  post: DcinsidePostData
+  post: DcinsidePostData,
+  fallbackSerial?: number
 ): Promise<void> {
   const captureFilename = getCaptureFilename(post.captureFilePath);
   const serial =
     extractSerialFromCaptureFilename(captureFilename) ??
+    fallbackSerial ??
     getNextDataRow(sheet) - DATA_START_ROW + 1;
   const rowIndex = getNextDataRow(sheet);
   await writePostToSheet(workbook, sheet, post, rowIndex, serial);

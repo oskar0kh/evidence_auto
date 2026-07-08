@@ -163,7 +163,12 @@ export async function appendBatchToSession(
     };
 
     await saveCaptureToScreenshotDir(shard.screenshotDir, post);
-    await addPostRowToWorkbook(shard.workbook, shard.sheet, postForExcel);
+    await addPostRowToWorkbook(
+      shard.workbook,
+      shard.sheet,
+      postForExcel,
+      shard.startSerial + shard.rows
+    );
     shard.rows += 1;
     shard.dirtySinceFlush += 1;
 
