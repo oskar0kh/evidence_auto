@@ -412,6 +412,13 @@
   color: #2563eb;
 }
 
+.progress-health {
+  display: inline-block;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+  color: #b45309;
+}
+
 .progress-url {
   margin: 0.625rem 0 0;
   font-size: 0.8rem;

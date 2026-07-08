@@ -3,6 +3,7 @@ import {
   type CrawlProgress,
   computeProgressLabel,
   computeProgressPercent,
+  formatHealthLabel,
   formatStageLabel,
   shortenUrl,
 } from '../crawlHelpers';
@@ -20,6 +21,7 @@ export default function CrawlProgressPanel({
 }: CrawlProgressPanelProps) {
   const progressPercent = computeProgressPercent(progress, loading);
   const progressLabel = computeProgressLabel(progress, loading);
+  const healthLabel = formatHealthLabel(progress.health);
 
   return (
     <div className="progress-panel" aria-live="polite">
@@ -37,6 +39,8 @@ export default function CrawlProgressPanel({
         <div className="progress-fill" style={{ width: `${progressPercent}%` }} />
       </div>
       <p className="progress-url">
+        {healthLabel ? <span className="progress-health">{healthLabel}</span> : null}
+        {healthLabel ? <br /> : null}
         {progress.total === 0 || progress.completed < progress.total ? (
           <>
             <span className="progress-stage">{formatStageLabel(progress.stage)}</span>

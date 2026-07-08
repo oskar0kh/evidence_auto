@@ -11,7 +11,7 @@ import {
   createCrawlPersistSession,
   type CrawlPersistSession,
 } from '../export/persistResults';
-import type { CrawlLogEntry, UrlTiming } from './types';
+import type { CrawlHealthEvent, CrawlLogEntry, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
 import type { DcinsidePostData } from '../../platforms/dcinside/types';
 
@@ -40,6 +40,7 @@ export interface CrawlProgress {
   stage?: string;
   successCount: number;
   failCount: number;
+  health?: CrawlHealthEvent | null;
 }
 
 export interface CrawlLogContext {
@@ -47,6 +48,22 @@ export interface CrawlLogContext {
   searchDateRange?: string;
   galleryName?: string;
   inputMode: CrawlLogEntry['inputMode'];
+}
+
+export function formatHealthLabel(health: CrawlHealthEvent | null | undefined): string | null {
+  if (!health) {
+    return null;
+  }
+  if (health.protectiveMode) {
+    if (health.preferBrowser) {
+      return `차단 감지 · 보호 모드(${health.currentPhaseLabel}) · 연속 실패 ${health.consecutiveFailures}회`;
+    }
+    return `차단 감지 · 보호 모드 활성 · 속도 조절 중`;
+  }
+  if (health.consecutiveFailures > 0 && health.lastBlockSignalLabel) {
+    return `일시 차단(${health.lastBlockSignalLabel}) · 재시도 중`;
+  }
+  return null;
 }
 
 export function deriveCommunityName(posts: DcinsidePostData[]): string {

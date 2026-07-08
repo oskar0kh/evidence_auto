@@ -23,6 +23,18 @@ export interface CrawlProgressEvent {
   failCount: number;
 }
 
+export interface CrawlHealthEvent {
+  currentPhase: string;
+  currentPhaseLabel: string;
+  consecutiveFailures: number;
+  lastBlockSignal: string | null;
+  lastBlockSignalLabel: string | null;
+  preferBrowser: boolean;
+  relaxBlockTracking: boolean;
+  protectiveMode: boolean;
+  message: string | null;
+}
+
 export interface UrlTiming {
   url: string;
   success: boolean;

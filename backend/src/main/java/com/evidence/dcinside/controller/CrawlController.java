@@ -1,10 +1,18 @@
 package com.evidence.dcinside.controller;
 
+import com.evidence.dcinside.dto.CrawlHealthEvent;
 import com.evidence.dcinside.dto.CrawlRequest;
 import com.evidence.dcinside.dto.DcinsidePostData;
 import com.evidence.dcinside.dto.SearchCrawlRequest;
 import com.evidence.dcinside.dto.SearchPageEvent;
 import com.evidence.dcinside.dto.SearchStreamCriteria;
+import com.evidence.dcinside.fetch.CrawlHealthTracker;
+import com.evidence.dcinside.fetch.DcinsideFetchEscalator;
+import com.evidence.dcinside.fetch.FetchedPage;
+import com.evidence.dcinside.fetch.FetchPhase;
+import com.evidence.dcinside.http.BlockSignal;
+import com.evidence.dcinside.http.CrawlThrottle;
+import com.evidence.dcinside.http.DcinsideHttpClient;
 import com.evidence.dcinside.service.DcinsideCrawlService;
 import com.evidence.dcinside.service.DcinsideSearchService;
 import com.evidence.dcinside.service.ScreenshotService;
@@ -47,15 +55,24 @@ public class CrawlController {
     private final DcinsideCrawlService crawlService;
     private final DcinsideSearchService searchService;
     private final ScreenshotService screenshotService;
+    private final DcinsideFetchEscalator fetchEscalator;
+    private final DcinsideHttpClient httpClient;
+    private final CrawlThrottle crawlThrottle;
 
     public CrawlController(
             DcinsideCrawlService crawlService,
             DcinsideSearchService searchService,
-            ScreenshotService screenshotService
+            ScreenshotService screenshotService,
+            DcinsideFetchEscalator fetchEscalator,
+            DcinsideHttpClient httpClient,
+            CrawlThrottle crawlThrottle
     ) {
         this.crawlService = crawlService;
         this.searchService = searchService;
         this.screenshotService = screenshotService;
+        this.fetchEscalator = fetchEscalator;
+        this.httpClient = httpClient;
+        this.crawlThrottle = crawlThrottle;
     }
 
     @PostMapping(value = "/dcinside/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -112,13 +129,16 @@ public class CrawlController {
         }
 
         CrawlState state = new CrawlState(validUrls.size(), request.startSerial());
+        CrawlHealthTracker health = fetchEscalator.newHealthTracker();
+        httpClient.resetCookies();
 
         try (ScreenshotService.CaptureSession captureSession = screenshotService.openCaptureSession()) {
             for (String trimmed : validUrls) {
-                processSingleUrl(trimmed, state, captureSession, callbacks);
+                sleepBeforeRequestQuietly(health);
+                processSingleUrl(trimmed, state, captureSession, callbacks, health);
             }
         } catch (Exception e) {
-            throw new IllegalStateException("스크린샷 세션을 시작할 수 없습니다: " + e.getMessage(), e);
+            throw new IllegalStateException("크롤 세션을 종료할 수 없습니다: " + e.getMessage(), e);
         }
 
         return state.toSummary();
@@ -137,6 +157,8 @@ public class CrawlController {
 
         Set<String> seen = new LinkedHashSet<>();
         CrawlState state = new CrawlState(0, request.startSerial());
+        CrawlHealthTracker health = fetchEscalator.newHealthTracker();
+        httpClient.resetCookies();
 
         try (ScreenshotService.CaptureSession captureSession = screenshotService.openCaptureSession()) {
             searchService.forEachSearchUrl(
@@ -145,12 +167,19 @@ public class CrawlController {
                     pageEvent -> emitSearchProgress(pageEvent, state, callbacks),
                     url -> {
                         state.total = Math.max(state.total, seen.size());
-                        processSingleUrl(url, state, captureSession, callbacks);
+                        sleepBeforeRequestQuietly(health);
+                        processSingleUrl(url, state, captureSession, callbacks, health);
                         return true;
-                    }
+                    },
+                    (searchUrl, message) -> {
+                        health.activateProtectiveMode();
+                        callbacks.urlError().accept(errorEntry(searchUrl, message, "search"));
+                        emitHealth(callbacks, health, message);
+                    },
+                    health
             );
         } catch (Exception e) {
-            throw new IllegalStateException("스크린샷 세션을 시작할 수 없습니다: " + e.getMessage(), e);
+            throw new IllegalStateException("검색 크롤 세션 오류: " + e.getMessage(), e);
         }
 
         state.total = Math.max(state.total, state.completed);
@@ -180,7 +209,8 @@ public class CrawlController {
             String trimmed,
             CrawlState state,
             ScreenshotService.CaptureSession captureSession,
-            CrawlCallbacks callbacks
+            CrawlCallbacks callbacks,
+            CrawlHealthTracker health
     ) {
         callbacks.progress().accept(new CrawlProgressEvent(
                 state.completed, state.total, trimmed, "text-crawl", state.successCount, state.failCount
@@ -190,7 +220,11 @@ public class CrawlController {
         List<StepTimings> partialTimings = new ArrayList<>();
 
         try {
-            TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed);
+            captureSession.setRelaxBlockTracking(health.shouldRelaxBlockTracking());
+            FetchedPage fetchedPage = fetchEscalator.fetchPostPage(trimmed, health, captureSession);
+            emitHealth(callbacks, health, null);
+
+            TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed, fetchedPage, health);
             partialTimings.add(crawled.timings());
             timer.step("text-crawl");
 
@@ -200,8 +234,13 @@ public class CrawlController {
 
             int excelRowNumber = state.nextSerial++;
             String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
-            TimedResult<CaptureImage> capture =
-                    captureSession.captureFullPage(trimmed, excelRowNumber, postNo);
+            boolean skipNavigate = fetchedPage.phase() == FetchPhase.BROWSER;
+            TimedResult<CaptureImage> capture = captureSession.captureFullPage(
+                    trimmed,
+                    excelRowNumber,
+                    postNo,
+                    skipNavigate
+            );
             partialTimings.add(capture.timings());
             timer.step("screenshot");
 
@@ -230,10 +269,12 @@ public class CrawlController {
         } catch (StageTimedException e) {
             partialTimings.add(e.timings());
             log.warn("Crawl failed for {} at {}: {}", trimmed, e.stage(), e.getMessage());
+            health.recordFailure(BlockSignal.HTTP_ERROR, health.currentPhase());
             Map<String, String> error = errorEntry(trimmed, e);
             UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
             callbacks.urlError().accept(error);
             callbacks.urlTiming().accept(failedTiming);
+            emitHealth(callbacks, health, e.getMessage());
             state.failCount++;
             state.completed++;
             callbacks.progress().accept(new CrawlProgressEvent(
@@ -241,15 +282,30 @@ public class CrawlController {
             ));
         } catch (Exception e) {
             log.warn("Crawl failed for {}: {}", trimmed, e.getMessage());
+            health.recordFailure(BlockSignal.HTTP_ERROR, health.currentPhase());
             Map<String, String> error = errorEntry(trimmed, e);
             UrlTiming failedTiming = buildFailedTiming(trimmed, partialTimings, timer);
             callbacks.urlError().accept(error);
             callbacks.urlTiming().accept(failedTiming);
+            emitHealth(callbacks, health, e.getMessage());
             state.failCount++;
             state.completed++;
             callbacks.progress().accept(new CrawlProgressEvent(
                     state.completed, state.total, trimmed, "url-failed", state.successCount, state.failCount
             ));
+        }
+    }
+
+    private void emitHealth(CrawlCallbacks callbacks, CrawlHealthTracker health, String message) {
+        callbacks.health().accept(health.snapshot(message));
+    }
+
+    private void sleepBeforeRequestQuietly(CrawlHealthTracker health) {
+        try {
+            crawlThrottle.sleepBeforeRequest(health.isProtectiveMode());
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IllegalStateException("크롤링이 중단되었습니다.", e);
         }
     }
 
@@ -302,6 +358,14 @@ public class CrawlController {
         return entry;
     }
 
+    private static Map<String, String> errorEntry(String url, String message, String stage) {
+        Map<String, String> entry = new HashMap<>();
+        entry.put("url", url);
+        entry.put("error", message);
+        entry.put("stage", stage);
+        return entry;
+    }
+
     private static final class CrawlState {
         int total;
         int completed;
@@ -323,14 +387,16 @@ public class CrawlController {
             Consumer<CrawlProgressEvent> progress,
             Consumer<DcinsidePostData> urlResult,
             Consumer<Map<String, String>> urlError,
-            Consumer<UrlTiming> urlTiming
+            Consumer<UrlTiming> urlTiming,
+            Consumer<CrawlHealthEvent> health
     ) {
         static CrawlCallbacks streaming(CrawlController controller, SseEmitter emitter) {
             return new CrawlCallbacks(
                     event -> controller.sendEvent(emitter, "progress", event),
                     data -> controller.sendEvent(emitter, "url-result", data),
                     error -> controller.sendEvent(emitter, "url-error", error),
-                    timing -> controller.sendEvent(emitter, "url-timing", timing)
+                    timing -> controller.sendEvent(emitter, "url-timing", timing),
+                    health -> controller.sendEvent(emitter, "health", health)
             );
         }
     }

@@ -7,8 +7,12 @@ import com.evidence.dto.TimedResult;
 import com.evidence.exception.StageTimedException;
 import com.evidence.util.StepTimer;
 import com.evidence.util.StepTimings;
+import com.evidence.dcinside.fetch.FetchedPage;
+import com.evidence.dcinside.fetch.FetchPhase;
+import com.evidence.dcinside.http.CrawlThrottle;
 import jakarta.annotation.PostConstruct;
 import org.openqa.selenium.By;
+import org.openqa.selenium.Cookie;
 import org.openqa.selenium.Dimension;
 import org.openqa.selenium.JavascriptExecutor;
 import org.openqa.selenium.WebDriver;
@@ -29,6 +33,7 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -60,6 +65,7 @@ public class ScreenshotService {
     private final int contentWaitSeconds;
     private final boolean blockTracking;
     private final boolean captureAllCommentPages;
+    private final CrawlThrottle crawlThrottle;
     private final ReentrantLock captureLock = new ReentrantLock();
 
     private String chromeBinary;
@@ -71,7 +77,8 @@ public class ScreenshotService {
             @Value("${evidence.screenshot.page-load-timeout-seconds:15}") int pageLoadTimeoutSeconds,
             @Value("${evidence.screenshot.content-wait-seconds:45}") int contentWaitSeconds,
             @Value("${evidence.screenshot.block-tracking:true}") boolean blockTracking,
-            @Value("${evidence.screenshot.capture-all-comment-pages:true}") boolean captureAllCommentPages
+            @Value("${evidence.screenshot.capture-all-comment-pages:true}") boolean captureAllCommentPages,
+            CrawlThrottle crawlThrottle
     ) {
         this.configuredChromeBinary = configuredChromeBinary == null ? "" : configuredChromeBinary.trim();
         this.commentWaitMs = commentWaitMs;
@@ -79,6 +86,7 @@ public class ScreenshotService {
         this.contentWaitSeconds = contentWaitSeconds;
         this.blockTracking = blockTracking;
         this.captureAllCommentPages = captureAllCommentPages;
+        this.crawlThrottle = crawlThrottle;
     }
 
     // 스크린샷 서비스 초기화
@@ -117,12 +125,40 @@ public class ScreenshotService {
 
         private ChromeDriver driver;
         private boolean closed;
+        private String loadedUrl = "";
+        private boolean relaxBlockTracking;
 
         private CaptureSession(ChromeDriver driver) {
             this.driver = driver;
         }
 
+        public void setRelaxBlockTracking(boolean relaxBlockTracking) {
+            this.relaxBlockTracking = relaxBlockTracking;
+        }
+
+        public FetchedPage fetchPageContent(String url, boolean relaxTracking) throws Exception {
+            StepTimer timer = new StepTimer(log, "browser-fetch " + url);
+            ensureDriver(timer, relaxTracking);
+            navigateIfNeeded(url, timer);
+            WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(contentWaitSeconds));
+            wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("div.gallview_head")));
+            timer.step("wait-gallview-head");
+            String html = driver.getPageSource();
+            Map<String, String> cookies = extractCookies();
+            timer.done();
+            return new FetchedPage(url, html, FetchPhase.BROWSER, url, cookies);
+        }
+
         public TimedResult<CaptureImage> captureFullPage(String url, int excelRowNumber, String postNo) throws Exception {
+            return captureFullPage(url, excelRowNumber, postNo, false);
+        }
+
+        public TimedResult<CaptureImage> captureFullPage(
+                String url,
+                int excelRowNumber,
+                String postNo,
+                boolean skipNavigate
+        ) throws Exception {
             String filename = formatFilename(excelRowNumber, postNo);
             Path tempFile = Files.createTempFile("evidence-capture-", ".png");
 
@@ -135,8 +171,8 @@ public class ScreenshotService {
                             : "screenshot " + url + " attempt=" + attempt;
                     StepTimer timer = new StepTimer(log, scope);
                     try {
-                        ensureDriver(timer);
-                        captureWithDriver(driver, url, postNo, tempFile, timer);
+                        ensureDriver(timer, relaxBlockTracking);
+                        captureWithDriver(driver, url, postNo, tempFile, timer, skipNavigate);
                         byte[] pngBytes = Files.readAllBytes(tempFile);
                         timer.step("read-temp-file (" + pngBytes.length + " bytes)");
                         StepTimings timings = timer.finish();
@@ -149,7 +185,7 @@ public class ScreenshotService {
                             invalidateDriver();
                         }
                         if (attempt < MAX_CAPTURE_ATTEMPTS) {
-                            TimeUnit.SECONDS.sleep(1);
+                            crawlThrottle.sleepBeforeScreenshotRetry();
                         }
                     }
                 }
@@ -185,11 +221,33 @@ public class ScreenshotService {
         }
 
         private void ensureDriver(StepTimer timer) throws Exception {
+            ensureDriver(timer, relaxBlockTracking);
+        }
+
+        private void ensureDriver(StepTimer timer, boolean relaxTracking) throws Exception {
             if (driver != null && ChromeDriverFactory.isDriverAlive(driver)) {
                 return;
             }
             invalidateDriver();
-            driver = createAndConfigureDriver(timer);
+            driver = createAndConfigureDriver(timer, relaxTracking);
+        }
+
+        private void navigateIfNeeded(String url, StepTimer timer) {
+            if (url.equals(loadedUrl)) {
+                timer.step("page-navigate (reused)");
+                return;
+            }
+            driver.get(url);
+            loadedUrl = url;
+            timer.step("page-navigate");
+        }
+
+        private Map<String, String> extractCookies() {
+            Map<String, String> cookies = new LinkedHashMap<>();
+            for (Cookie cookie : driver.manage().getCookies()) {
+                cookies.put(cookie.getName(), cookie.getValue());
+            }
+            return cookies;
         }
 
         private void invalidateDriver() {
@@ -199,11 +257,15 @@ public class ScreenshotService {
     }
 
     private ChromeDriver createAndConfigureDriver(StepTimer timer) throws Exception {
+        return createAndConfigureDriver(timer, false);
+    }
+
+    private ChromeDriver createAndConfigureDriver(StepTimer timer, boolean relaxTracking) throws Exception {
         ChromeDriver chromeDriver = ChromeDriverFactory.createDriver(chromeBinary);
         if (timer != null) {
             timer.step("create-driver");
         }
-        if (blockTracking) {
+        if (blockTracking && !relaxTracking) {
             TrackingDomainBlocker.apply(chromeDriver);
             if (timer != null) {
                 timer.step("apply-tracking-blocker");
@@ -214,11 +276,21 @@ public class ScreenshotService {
         return chromeDriver;
     }
 
-    private void captureWithDriver(ChromeDriver driver, String url, String postNo, Path filePath, StepTimer timer)
-            throws Exception {
+    private void captureWithDriver(
+            ChromeDriver driver,
+            String url,
+            String postNo,
+            Path filePath,
+            StepTimer timer,
+            boolean skipNavigate
+    ) throws Exception {
         resetBeforeCapture(driver);
-        driver.get(url);
-        timer.step("page-navigate");
+        if (!skipNavigate) {
+            driver.get(url);
+            timer.step("page-navigate");
+        } else {
+            timer.step("page-navigate (reused)");
+        }
 
         WebDriverWait wait = new WebDriverWait(driver, Duration.ofSeconds(contentWaitSeconds));
         wait.until(ExpectedConditions.presenceOfElementLocated(By.cssSelector("div.gallview_head")));

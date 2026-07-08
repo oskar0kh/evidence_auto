@@ -17,14 +17,12 @@ import org.jsoup.nodes.TextNode;
 import org.jsoup.select.Elements;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import com.evidence.dcinside.fetch.FetchedPage;
+import com.evidence.dcinside.http.CrawlThrottle;
+import com.evidence.dcinside.http.DcinsideHttpClient;
 import org.springframework.stereotype.Service;
 
-import java.net.CookieManager;
-import java.net.CookiePolicy;
-import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.OffsetDateTime;
@@ -41,15 +39,28 @@ public class DcinsideCrawlService {
     private static final Logger log = LoggerFactory.getLogger(DcinsideCrawlService.class);
 
     private final ObjectMapper objectMapper = new ObjectMapper();
+    private final DcinsideHttpClient httpClient;
+    private final CrawlThrottle crawlThrottle;
 
-    private final CookieManager cookieManager = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .cookieHandler(cookieManager)
-            .followRedirects(HttpClient.Redirect.NORMAL)
-            .build();
+    public DcinsideCrawlService(DcinsideHttpClient httpClient, CrawlThrottle crawlThrottle) {
+        this.httpClient = httpClient;
+        this.crawlThrottle = crawlThrottle;
+    }
 
     // 디시인사이드 게시글 크롤링
     public TimedResult<DcinsidePostData> crawl(String url) throws Exception {
+        return crawl(url, null);
+    }
+
+    public TimedResult<DcinsidePostData> crawl(String url, FetchedPage fetchedPage) throws Exception {
+        return crawl(url, fetchedPage, null);
+    }
+
+    public TimedResult<DcinsidePostData> crawl(
+            String url,
+            FetchedPage fetchedPage,
+            com.evidence.dcinside.fetch.CrawlHealthTracker health
+    ) throws Exception {
         if (!DcinsideConstants.isPostUrl(url)) {
             throw new IllegalArgumentException("디시인사이드 게시글 URL이 아닙니다.");
         }
@@ -58,21 +69,36 @@ public class DcinsideCrawlService {
         String normalizedUrl = normalizeUrl(url);
         StepTimer timer = new StepTimer(log, "text-crawl " + normalizedUrl);
         try {
-            return new TimedResult<>(crawlInternal(normalizedUrl, timer), timer.finish());
+            return new TimedResult<>(crawlInternal(normalizedUrl, fetchedPage, health, timer), timer.finish());
         } catch (Exception e) {
             throw new StageTimedException("text-crawl", e, timer.finish());
         }
     }
 
-    private DcinsidePostData crawlInternal(String normalizedUrl, StepTimer timer) throws Exception {
-        cookieManager.getCookieStore().removeAll();
+    private DcinsidePostData crawlInternal(
+            String normalizedUrl,
+            FetchedPage fetchedPage,
+            com.evidence.dcinside.fetch.CrawlHealthTracker health,
+            StepTimer timer
+    ) throws Exception {
+        String html;
+        String pageUrl;
+        if (fetchedPage != null) {
+            html = fetchedPage.html();
+            pageUrl = fetchedPage.url();
+            if (!fetchedPage.cookies().isEmpty()) {
+                httpClient.importCookies(fetchedPage.cookies(), "gall.dcinside.com");
+            }
+            timer.step("fetch-page (" + fetchedPage.phase().id() + ")");
+        } else {
+            boolean resilient = health != null && health.isProtectiveMode();
+            HttpResponse<String> pageResponse = httpClient.get(normalizedUrl, null, "document", resilient);
+            html = pageResponse.body();
+            pageUrl = normalizedUrl;
+            timer.step("fetch-page");
+        }
 
-        // 페이지 파싱
-        HttpResponse<String> pageResponse = fetchPage(httpClient, normalizedUrl);
-        timer.step("fetch-page");
-
-        // 문서 파싱
-        Document doc = Jsoup.parse(pageResponse.body(), normalizedUrl);
+        Document doc = Jsoup.parse(html, pageUrl);
         
         // JSON-LD 파싱 (실패 시 빈 노드 → HTML fallback)
         JsonNode jsonLd = parseJsonLd(doc);
@@ -117,7 +143,14 @@ public class DcinsideCrawlService {
         timer.step("parse-html");
 
         // 댓글 추출
-        List<CommentData> comments = fetchAllComments(httpClient, normalizedUrl, galleryId, postNo, esno, galleryType);
+        List<CommentData> comments = fetchAllComments(
+                normalizedUrl,
+                galleryId,
+                postNo,
+                esno,
+                galleryType,
+                health
+        );
         timer.step("fetch-comments (" + comments.size() + " comments)");
         int realCommentCount = countRealComments(comments);
         int commentCount = comments.isEmpty()
@@ -185,22 +218,6 @@ public class DcinsideCrawlService {
                 data.postNo(),
                 data.comments()
         );
-    }
-
-    // 페이지 파싱
-    private HttpResponse<String> fetchPage(HttpClient client, String url) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("User-Agent", DcinsideConstants.USER_AGENT)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .header("Accept-Language", "ko-KR,ko;q=0.9")
-                .GET()
-                .build();
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        if (response.statusCode() != 200) {
-            throw new IllegalStateException("페이지를 불러올 수 없습니다. HTTP " + response.statusCode());
-        }
-        return response;
     }
 
     // JSON-LD 파싱 (디시 측 잘못된 JSON은 HTML fallback)
@@ -475,15 +492,15 @@ public class DcinsideCrawlService {
 
     // 모든 댓글 추출
     private List<CommentData> fetchAllComments(
-            HttpClient client,
             String referer,
             String galleryId,
             String postNo,
             String esno,
-            String galleryType
+            String galleryType,
+            com.evidence.dcinside.fetch.CrawlHealthTracker health
     ) {
         try {
-            return fetchAllCommentsInternal(client, referer, galleryId, postNo, esno, galleryType);
+            return fetchAllCommentsInternal(referer, galleryId, postNo, esno, galleryType, health);
         } catch (Exception e) {
             log.warn("댓글 수집 실패 ({}): {}", referer, e.getMessage());
             return List.of();
@@ -491,12 +508,12 @@ public class DcinsideCrawlService {
     }
 
     private List<CommentData> fetchAllCommentsInternal(
-            HttpClient client,
             String referer,
             String galleryId,
             String postNo,
             String esno,
-            String galleryType
+            String galleryType,
+            com.evidence.dcinside.fetch.CrawlHealthTracker health
     ) throws Exception {
         List<CommentData> all = new ArrayList<>();
         int page = 1;
@@ -505,7 +522,7 @@ public class DcinsideCrawlService {
 
         while (all.size() < totalCnt && page <= 50) {
             apiCalls++;
-            JsonNode data = fetchCommentPage(client, referer, galleryId, postNo, esno, galleryType, page);
+            JsonNode data = fetchCommentPage(referer, galleryId, postNo, esno, galleryType, page, health);
             totalCnt = data.path("total_cnt").asInt(0);
             JsonNode comments = data.get("comments");
             if (comments == null || !comments.isArray() || comments.isEmpty()) {
@@ -536,6 +553,8 @@ public class DcinsideCrawlService {
                 break;
             }
             page++;
+            boolean protective = health != null && health.isProtectiveMode();
+            crawlThrottle.sleepBeforeCommentPage(protective);
         }
         if (apiCalls > 0) {
             log.info("[timing] fetch-comments-api | {} API calls, {} comments", apiCalls, all.size());
@@ -545,13 +564,13 @@ public class DcinsideCrawlService {
 
     // 댓글 페이지 파싱
     private JsonNode fetchCommentPage(
-            HttpClient client,
             String referer,
             String galleryId,
             String postNo,
             String esno,
             String galleryType,
-            int page
+            int page,
+            com.evidence.dcinside.fetch.CrawlHealthTracker health
     ) throws Exception {
         String form = "id=" + enc(galleryId)
                 + "&no=" + enc(postNo)
@@ -564,19 +583,13 @@ public class DcinsideCrawlService {
                 + "&board_type="
                 + "&_GALLERY_TYPE_=" + enc(galleryType);
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(resolveCommentApiUrl(referer, galleryType)))
-                .header("User-Agent", DcinsideConstants.USER_AGENT)
-                .header("Accept", "application/json, text/javascript, */*; q=0.01")
-                .header("Accept-Language", "ko-KR,ko;q=0.9")
-                .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-                .header("Referer", referer)
-                .header("Origin", "https://gall.dcinside.com")
-                .header("X-Requested-With", "XMLHttpRequest")
-                .POST(HttpRequest.BodyPublishers.ofString(form))
-                .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
+        boolean resilient = health != null && health.isProtectiveMode();
+        HttpResponse<String> response = httpClient.postForm(
+                resolveCommentApiUrl(referer, galleryType),
+                form,
+                referer,
+                resilient
+        );
         String body = response.body();
         if (response.statusCode() != 200 || body.startsWith("<") || body.contains("정상적인 접근")) {
             throw new IllegalStateException("댓글 API 호출에 실패했습니다.");

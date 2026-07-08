@@ -28,7 +28,7 @@ import {
 } from './crawlHelpers';
 import { isAbortError } from '../../shared/lib/abort';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from '../../shared/lib/nativeFolderPicker';
-import type { UrlTiming } from './types';
+import type { CrawlHealthEvent, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
 import type { DcinsidePostData } from '../../platforms/dcinside/types';
 
@@ -124,6 +124,10 @@ export function useCrawlOrchestrator() {
     return true;
   };
 
+  const applyHealthUpdate = (health: CrawlHealthEvent) => {
+    setProgress((prev) => (prev ? { ...prev, health } : prev));
+  };
+
   const runSearchCrawl = async (options: {
     query: string;
     useDateRange: boolean;
@@ -213,7 +217,8 @@ export function useCrawlOrchestrator() {
               : `저장 실패: ${saveMessage}`;
           }
         },
-        abortSignal
+        abortSignal,
+        applyHealthUpdate
       );
 
       const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
@@ -406,7 +411,8 @@ export function useCrawlOrchestrator() {
             batchResults = mergeSavedResults(batchResults, [post]);
           },
           abortSignal,
-          options?.galleryId
+          options?.galleryId,
+          applyHealthUpdate
         );
 
         const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);

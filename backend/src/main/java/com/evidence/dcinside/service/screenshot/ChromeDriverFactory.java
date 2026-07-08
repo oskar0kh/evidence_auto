@@ -1,6 +1,7 @@
 package com.evidence.dcinside.service.screenshot;
 
 import com.evidence.dcinside.DcinsideConstants;
+import com.evidence.dcinside.DcinsideUserAgent;
 import io.github.bonigarcia.wdm.WebDriverManager;
 import org.openqa.selenium.PageLoadStrategy;
 import org.openqa.selenium.WebDriver;
@@ -66,13 +67,16 @@ public final class ChromeDriverFactory {
     }
 
     public static void setupChromeDriver(String chromeBinary) {
-        String majorVersion = detectChromeMajorVersion(chromeBinary);
+        String versionOutput = readChromeVersionOutput(chromeBinary);
+        DcinsideUserAgent.syncFromChromeVersionOutput(versionOutput);
+        String majorVersion = detectChromeMajorVersion(versionOutput);
         WebDriverManager manager = WebDriverManager.chromedriver();
         if (!majorVersion.isEmpty()) {
             manager.browserVersion(majorVersion);
             log.info("ChromeDriver browserVersion={}", majorVersion);
         }
         manager.setup();
+        log.info("Synchronized User-Agent with Chrome: {}", DcinsideConstants.userAgent());
     }
 
     public static ChromeDriver createDriver(String chromeBinary) {
@@ -98,7 +102,7 @@ public final class ChromeDriverFactory {
                 "--lang=ko-KR",
                 "--accept-lang=ko-KR,ko"
         );
-        options.addArguments("--user-agent=" + DcinsideConstants.USER_AGENT);
+        options.addArguments("--user-agent=" + DcinsideConstants.userAgent());
 
         ChromeDriverService service = new ChromeDriverService.Builder()
                 .withEnvironment(Map.of("LANG", "ko_KR.UTF-8", "LC_ALL", "ko_KR.UTF-8"))
@@ -169,7 +173,7 @@ public final class ChromeDriverFactory {
         }
     }
 
-    private static String detectChromeMajorVersion(String binary) {
+    private static String readChromeVersionOutput(String binary) {
         try {
             Process process = new ProcessBuilder(binary, "--version").redirectErrorStream(true).start();
             StringBuilder output = new StringBuilder();
@@ -180,13 +184,18 @@ public final class ChromeDriverFactory {
                 }
             }
             if (process.waitFor(5, TimeUnit.SECONDS) && process.exitValue() == 0) {
-                Matcher matcher = CHROME_VERSION_PATTERN.matcher(output.toString());
-                if (matcher.find()) {
-                    return matcher.group(1);
-                }
+                return output.toString();
             }
         } catch (Exception e) {
             log.warn("Chrome version detection failed: {}", e.getMessage());
+        }
+        return "";
+    }
+
+    private static String detectChromeMajorVersion(String versionOutput) {
+        Matcher matcher = CHROME_VERSION_PATTERN.matcher(versionOutput == null ? "" : versionOutput);
+        if (matcher.find()) {
+            return matcher.group(1);
         }
         return "";
     }

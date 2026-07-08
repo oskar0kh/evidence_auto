@@ -1,21 +1,20 @@
 package com.evidence.dcinside.service;
 
-import com.evidence.dcinside.DcinsideConstants;
 import com.evidence.dcinside.dto.GalleryCandidate;
 import com.evidence.dcinside.dto.SearchPageEvent;
 import com.evidence.dcinside.dto.SearchRequest;
 import com.evidence.dcinside.dto.SearchStreamCriteria;
-import org.jsoup.Jsoup;
+import com.evidence.dcinside.fetch.CrawlHealthTracker;
+import com.evidence.dcinside.fetch.DcinsideFetchEscalator;
+import com.evidence.dcinside.http.CrawlThrottle;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
-import java.net.URI;
 import java.net.URLEncoder;
-import java.net.http.HttpClient;
-import java.net.http.HttpRequest;
-import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
@@ -32,10 +31,11 @@ import java.util.regex.Pattern;
 @Service
 public class DcinsideSearchService {
 
+    private static final Logger log = LoggerFactory.getLogger(DcinsideSearchService.class);
+
     private static final int DEFAULT_MAX_RESULTS = 100;
     private static final int MAX_PAGE_LIMIT = 10;
     private static final int MAX_DATE_RANGE_PAGE_LIMIT = 500;
-    private static final int TERM_SEARCH_DELAY_MS = 500;
 
     private static final DateTimeFormatter SEARCH_RESULT_DATE_FORMAT =
             DateTimeFormatter.ofPattern("yyyy.MM.dd HH:mm");
@@ -45,9 +45,16 @@ public class DcinsideSearchService {
             Pattern.compile("[?&]id=([^&\\s]+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern GALLERY_ID_PATTERN = Pattern.compile("^[a-zA-Z0-9_\\-]+$");
 
-    private final HttpClient httpClient = HttpClient.newBuilder()
-            .followRedirects(HttpClient.Redirect.NORMAL)
-            .build();
+    private final DcinsideFetchEscalator fetchEscalator;
+    private final CrawlThrottle crawlThrottle;
+
+    public DcinsideSearchService(
+            DcinsideFetchEscalator fetchEscalator,
+            CrawlThrottle crawlThrottle
+    ) {
+        this.fetchEscalator = fetchEscalator;
+        this.crawlThrottle = crawlThrottle;
+    }
 
     public record SearchResult(
             List<String> urls,
@@ -57,6 +64,16 @@ public class DcinsideSearchService {
             String startDate,
             String endDate
     ) {
+    }
+
+    @FunctionalInterface
+    public interface SearchUrlConsumer {
+        boolean accept(String url) throws Exception;
+    }
+
+    @FunctionalInterface
+    public interface SearchPageErrorConsumer {
+        void accept(String searchUrl, String errorMessage);
     }
 
     public SearchResult search(SearchRequest request) throws Exception {
@@ -106,7 +123,7 @@ public class DcinsideSearchService {
     public List<String> searchIntegrated(String query, Integer maxResults) throws Exception {
         Set<String> collected = new LinkedHashSet<>();
         SearchStreamCriteria criteria = new SearchStreamCriteria(query, maxResults, null, null, null);
-        forEachSearchUrl(criteria, collected, page -> { }, url -> true);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null);
         return new ArrayList<>(collected);
     }
 
@@ -115,7 +132,7 @@ public class DcinsideSearchService {
         validateDateRange(startDate, endDate);
         Set<String> collected = new LinkedHashSet<>();
         SearchStreamCriteria criteria = new SearchStreamCriteria(query, null, startDate, endDate, null);
-        forEachSearchUrl(criteria, collected, page -> { }, url -> true);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null);
         return new ArrayList<>(collected);
     }
 
@@ -123,7 +140,7 @@ public class DcinsideSearchService {
         String normalizedGalleryId = normalizeGalleryId(galleryId);
         Set<String> collected = new LinkedHashSet<>();
         SearchStreamCriteria criteria = new SearchStreamCriteria(query, maxResults, null, null, normalizedGalleryId);
-        forEachSearchUrl(criteria, collected, page -> { }, url -> true);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null);
         return filterUrlsByGalleryId(new ArrayList<>(collected), normalizedGalleryId);
     }
 
@@ -139,7 +156,7 @@ public class DcinsideSearchService {
         SearchStreamCriteria criteria = new SearchStreamCriteria(
                 query, null, startDate, endDate, normalizedGalleryId
         );
-        forEachSearchUrl(criteria, collected, page -> { }, url -> true);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null);
         return filterUrlsByGalleryId(new ArrayList<>(collected), normalizedGalleryId);
     }
 
@@ -151,7 +168,9 @@ public class DcinsideSearchService {
             SearchStreamCriteria criteria,
             Set<String> seen,
             Consumer<SearchPageEvent> onPage,
-            SearchUrlConsumer onUrl
+            SearchUrlConsumer onUrl,
+            SearchPageErrorConsumer onPageError,
+            CrawlHealthTracker health
     ) throws Exception {
         if (criteria.isDateRangeSearch()) {
             validateDateRange(criteria.startDate(), criteria.endDate());
@@ -181,7 +200,19 @@ public class DcinsideSearchService {
                 onPage.accept(new SearchPageEvent(termIdx + 1, terms.size(), term, page, seen.size()));
 
                 String searchUrl = buildSearchUrl(page, encodedQuery, galleryId);
-                Document doc = fetchDocument(httpClient, searchUrl);
+                Document doc = fetchEscalator.fetchSearchDocument(searchUrl, health);
+                if (doc == null) {
+                    String message = "검색 페이지를 불러올 수 없습니다: " + searchUrl;
+                    log.warn(message);
+                    if (health != null) {
+                        health.activateProtectiveMode();
+                    }
+                    if (onPageError != null) {
+                        onPageError.accept(searchUrl, message);
+                    }
+                    break;
+                }
+
                 List<SearchResultItem> pageResults = extractPageResults(doc);
                 if (pageResults.isEmpty()) {
                     break;
@@ -224,19 +255,16 @@ public class DcinsideSearchService {
                     if (!dateRange && termCollected >= limit) {
                         break;
                     }
-                    Thread.sleep(TERM_SEARCH_DELAY_MS);
+                    boolean protective = health != null && health.isProtectiveMode();
+                    crawlThrottle.sleepBeforeRequest(protective);
                 }
             }
 
             if (termIdx < terms.size() - 1) {
-                Thread.sleep(TERM_SEARCH_DELAY_MS);
+                boolean protective = health != null && health.isProtectiveMode();
+                crawlThrottle.sleepBeforeRequest(protective);
             }
         }
-    }
-
-    @FunctionalInterface
-    public interface SearchUrlConsumer {
-        boolean accept(String url) throws Exception;
     }
 
     private static void validateDateRange(LocalDate startDate, LocalDate endDate) {
@@ -263,7 +291,10 @@ public class DcinsideSearchService {
         String trimmedName = galleryName.trim();
         String encodedName = URLEncoder.encode(trimmedName, StandardCharsets.UTF_8);
         String searchUrl = "https://search.dcinside.com/gallery/q/" + encodedName;
-        Document doc = fetchDocument(httpClient, searchUrl);
+        Document doc = fetchEscalator.fetchSearchDocument(searchUrl);
+        if (doc == null) {
+            throw new IllegalStateException("갤러리 검색 페이지를 불러올 수 없습니다.");
+        }
 
         LinkedHashMap<String, GalleryCandidate> collected = new LinkedHashMap<>();
         appendGalleryCandidates(doc.select("div.gallsch_result_all a.gallname_txt"), collected);
@@ -411,22 +442,6 @@ public class DcinsideSearchService {
         return url;
     }
 
-    private Document fetchDocument(HttpClient client, String url) throws Exception {
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(url))
-                .header("User-Agent", DcinsideConstants.USER_AGENT)
-                .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-                .header("Accept-Language", "ko-KR,ko;q=0.9")
-                .GET()
-                .build();
-
-        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8));
-        if (response.statusCode() != 200) {
-            throw new IllegalStateException("검색 페이지를 불러올 수 없습니다. HTTP " + response.statusCode());
-        }
-        return Jsoup.parse(response.body(), url);
-    }
-
     private List<SearchResultItem> extractPageResults(Document doc) {
         Elements items = doc.select("ul.sch_result_list > li");
         List<SearchResultItem> results = new ArrayList<>();
@@ -440,7 +455,7 @@ public class DcinsideSearchService {
                 continue;
             }
             String normalized = normalizePostUrl(href);
-            if (!DcinsideConstants.POST_URL_PATTERN.matcher(normalized).find()) {
+            if (!com.evidence.dcinside.DcinsideConstants.POST_URL_PATTERN.matcher(normalized).find()) {
                 continue;
             }
 
