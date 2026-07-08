@@ -13,6 +13,11 @@ export function buildResultFolderName(stamp: string, part?: number): string {
   return part && part > 0 ? `결과물_${stamp}_${part}` : `결과물_${stamp}`;
 }
 
+/** shard 폴더명: 연번 시작~끝 범위 (예: 1-200, 401-527) */
+export function buildShardFolderName(startSerial: number, endSerial: number): string {
+  return `${startSerial}-${endSerial}`;
+}
+
 export function sanitizeFilenamePart(value: string): string {
   return value.replace(/[\\/:*?"<>|]/g, '_').trim() || '미상';
 }
