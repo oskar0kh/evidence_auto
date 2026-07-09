@@ -171,7 +171,8 @@ export async function appendBatchToSession(
       shard.workbook,
       shard.sheet,
       postForExcel,
-      shard.startSerial + shard.rows
+      shard.startSerial + shard.rows,
+      session.keyword
     );
     shard.rows += 1;
     shard.dirtySinceFlush += 1;

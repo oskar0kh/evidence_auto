@@ -6,6 +6,11 @@ import {
   sanitizeExcelText,
 } from '../../shared/lib/excelUtils';
 import {
+  buildBoldHighlightCellValue,
+  parseSearchTerms,
+  plainTextFromCellValue,
+} from '../../shared/lib/searchHighlight';
+import {
   extractSerialFromCaptureFilename,
   getCaptureFilename,
   toCaptureHyperlink,
@@ -40,7 +45,7 @@ const LINE_HEIGHT_PT = 15;
 const ROW_PADDING_PT = 10;
 
 function stringCellValue(value: unknown): string {
-  return sanitizeExcelText(value);
+  return plainTextFromCellValue(value);
 }
 
 function estimateWrappedLines(text: string, columnWidth: number): number {
@@ -192,20 +197,22 @@ async function writePostToSheet(
   sheet: ExcelJS.Worksheet,
   post: DcinsidePostData,
   rowIndex: number,
-  serial: number
+  serial: number,
+  keyword?: string
 ): Promise<void> {
   const captureFilename = getCaptureFilename(post.captureFilePath);
   const commentSection = extractCommentsSection(post.content);
   const bodySection = extractBodySection(post.content);
+  const searchTerms = parseSearchTerms(keyword);
 
   const rowValues = [
     serial,
     sanitizeExcelText(post.postDate),
     sanitizeExcelText(post.galleryName ?? ''),
     sanitizeExcelText(post.nickname),
-    sanitizeExcelText(post.title),
-    sanitizeExcelText(bodySection),
-    sanitizeExcelText(commentSection),
+    buildBoldHighlightCellValue(post.title, searchTerms),
+    buildBoldHighlightCellValue(bodySection, searchTerms),
+    buildBoldHighlightCellValue(commentSection, searchTerms),
     sanitizeExcelText(post.remarks),
     sanitizeExcelText(post.url),
     sanitizeExcelText(post.captureFilePath),
@@ -287,7 +294,8 @@ export async function addPostRowToWorkbook(
   workbook: ExcelJS.Workbook,
   sheet: ExcelJS.Worksheet,
   post: DcinsidePostData,
-  fallbackSerial?: number
+  fallbackSerial?: number,
+  keyword?: string
 ): Promise<void> {
   const captureFilename = getCaptureFilename(post.captureFilePath);
   const serial =
@@ -295,7 +303,7 @@ export async function addPostRowToWorkbook(
     fallbackSerial ??
     getNextDataRow(sheet) - DATA_START_ROW + 1;
   const rowIndex = getNextDataRow(sheet);
-  await writePostToSheet(workbook, sheet, post, rowIndex, serial);
+  await writePostToSheet(workbook, sheet, post, rowIndex, serial, keyword);
 }
 
 export async function serializeCrimeListWorkbook(
