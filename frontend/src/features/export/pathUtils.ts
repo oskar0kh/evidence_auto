@@ -22,20 +22,39 @@ export function sanitizeFilenamePart(value: string): string {
   return value.replace(/[\\/:*?"<>|]/g, '_').trim() || '미상';
 }
 
-export function buildExcelFilename(
-  communityName: string | undefined,
-  keyword: string | undefined,
-  stamp: string,
-  part?: number
-): string {
+export const DCINSIDE_COMMUNITY_NAME = '디시인사이드';
+
+export interface ExcelFilenameOptions {
+  keyword?: string;
+  communityName?: string;
+  galleryName?: string;
+  stamp: string;
+  part?: number;
+}
+
+/**
+ * 엑셀 파일명 규칙:
+ * - 검색어 O, 갤러리 미지정: 범죄일람표_{검색어}_{커뮤니티명}_{YYYYMMDD_HHMM}.xlsx
+ * - 검색어 O, 갤러리 지정: 범죄일람표_{검색어}_{커뮤니티명}_{갤러리명}_{YYYYMMDD_HHMM}.xlsx
+ * - 검색어 X (URL 직접입력): 범죄일람표_{커뮤니티명}_{YYYYMMDD_HHMM}.xlsx
+ */
+export function buildExcelFilename(options: ExcelFilenameOptions): string {
+  const {
+    keyword,
+    communityName = DCINSIDE_COMMUNITY_NAME,
+    galleryName,
+    stamp,
+    part,
+  } = options;
   const trimmedKeyword = keyword?.trim();
   const suffix = part && part > 0 ? `_${stamp}_${part}` : `_${stamp}`;
   const parts = ['범죄일람표'];
-  if (communityName?.trim()) {
-    parts.push(sanitizeFilenamePart(communityName));
-  }
   if (trimmedKeyword) {
     parts.push(sanitizeFilenamePart(trimmedKeyword));
+  }
+  parts.push(sanitizeFilenamePart(communityName));
+  if (galleryName?.trim()) {
+    parts.push(sanitizeFilenamePart(galleryName));
   }
   return `${parts.join('_')}${suffix}.xlsx`;
 }

@@ -22,7 +22,6 @@ import {
   isValidDateRange,
   mergeSavedResults,
   parseUrls,
-  resolveExcelCommunityName,
   saveBatchResults,
   saveCrawlLog,
 } from './crawlHelpers';
@@ -66,7 +65,7 @@ export function useCrawlOrchestrator() {
   const crawlStartAtRef = useRef<number | null>(null);
   const crawlAbortRef = useRef<AbortController | null>(null);
   const lastSearchKeywordRef = useRef<string | undefined>(undefined);
-  const lastIncludeGalleryInFilenameRef = useRef(false);
+  const lastGalleryNameRef = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     if (!loading) {
@@ -135,6 +134,7 @@ export function useCrawlOrchestrator() {
     useDateRange: boolean;
     galleryId?: string;
     galleryLabel?: string;
+    galleryName?: string;
     useGallerySearch: boolean;
     logContext: CrawlLogContext;
     clearSearchInput?: boolean;
@@ -204,8 +204,10 @@ export function useCrawlOrchestrator() {
               persistSession,
               [post],
               saveDirectoryRef.current,
-              resolveExcelCommunityName([post], options.useGallerySearch),
-              lastSearchKeywordRef.current
+              {
+                keyword: lastSearchKeywordRef.current,
+                galleryName: options.useGallerySearch ? options.galleryName : undefined,
+              }
             );
             persistSession = saved.session;
             setSavedResults((prev) => mergeSavedResults(prev, saved.postsForExcel));
@@ -437,8 +439,9 @@ export function useCrawlOrchestrator() {
               persistSession,
               batchResults,
               saveDirectoryRef.current,
-              resolveExcelCommunityName(batchResults, Boolean(options?.galleryId?.trim())),
-              lastSearchKeywordRef.current
+              {
+                keyword: lastSearchKeywordRef.current,
+              }
             );
             persistSession = saved.session;
             setSavedResults((prev) => mergeSavedResults(prev, saved.postsForExcel));
@@ -561,7 +564,7 @@ export function useCrawlOrchestrator() {
     }
 
     lastSearchKeywordRef.current = undefined;
-    lastIncludeGalleryInFilenameRef.current = false;
+    lastGalleryNameRef.current = undefined;
     await runCrawlForUrls(urls, {
       clearUrlInput: true,
       logContext: { inputMode: 'URL 직접입력' },
@@ -647,6 +650,7 @@ export function useCrawlOrchestrator() {
     const useDateRange = Boolean(searchStartDate && searchEndDate);
     const galleryId = gallery?.id;
     const galleryLabel = gallery ? formatGalleryLabel(gallery) : undefined;
+    const galleryName = gallery?.name;
     const useGallerySearch = Boolean(galleryId);
 
     const inputMode = useGallerySearch
@@ -658,12 +662,13 @@ export function useCrawlOrchestrator() {
         : '검색어';
 
     lastSearchKeywordRef.current = query;
-    lastIncludeGalleryInFilenameRef.current = useGallerySearch;
+    lastGalleryNameRef.current = useGallerySearch ? galleryName : undefined;
     await runSearchCrawl({
       query,
       useDateRange,
       galleryId,
       galleryLabel,
+      galleryName,
       useGallerySearch,
       logContext: {
         keyword: query,
@@ -692,11 +697,8 @@ export function useCrawlOrchestrator() {
         saveDirectoryRef.current,
         savedResults,
         {
-          communityName: resolveExcelCommunityName(
-            savedResults,
-            lastIncludeGalleryInFilenameRef.current
-          ),
           keyword: lastSearchKeywordRef.current,
+          galleryName: lastGalleryNameRef.current,
         }
       );
       setSavedResults(postsForExcel);

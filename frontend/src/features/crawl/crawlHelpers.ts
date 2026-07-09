@@ -11,6 +11,7 @@ import {
   appendBatchToSession,
   createCrawlPersistSession,
   type CrawlPersistSession,
+  type PersistResultsOptions,
 } from '../export/persistResults';
 import type { CrawlFailureRecord, CrawlHealthEvent, CrawlLogEntry, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
@@ -76,25 +77,6 @@ export function formatHealthLabel(health: CrawlHealthEvent | null | undefined): 
     return `일시 차단(${health.lastBlockSignalLabel}) · 재시도 중`;
   }
   return null;
-}
-
-export function deriveCommunityName(posts: DcinsidePostData[]): string {
-  const galleryNames = posts
-    .map((post) => post.galleryName?.trim())
-    .filter((name): name is string => Boolean(name));
-  if (galleryNames.length === 0) {
-    return '디시인사이드';
-  }
-  const uniqueNames = [...new Set(galleryNames)];
-  return uniqueNames.length === 1 ? uniqueNames[0] : '디시인사이드';
-}
-
-/** 갤러리 검색을 선택한 경우에만 엑셀 파일명용 갤러리명을 반환한다. */
-export function resolveExcelCommunityName(
-  posts: DcinsidePostData[],
-  includeGalleryInFilename: boolean
-): string | undefined {
-  return includeGalleryInFilename ? deriveCommunityName(posts) : undefined;
 }
 
 export function parseUrls(input: string): string[] {
@@ -242,15 +224,11 @@ export async function saveBatchResults(
   session: CrawlPersistSession | null,
   batchResults: DcinsidePostData[],
   directory: FileSystemDirectoryHandle,
-  communityName: string | undefined,
-  keyword: string | undefined
+  options: PersistResultsOptions
 ): Promise<{ session: CrawlPersistSession; postsForExcel: DcinsidePostData[] }> {
   let activeSession = session;
   if (!activeSession) {
-    activeSession = await createCrawlPersistSession(directory, {
-      communityName,
-      keyword,
-    });
+    activeSession = await createCrawlPersistSession(directory, options);
   }
   const postsForExcel = await appendBatchToSession(activeSession, batchResults);
   return { session: activeSession, postsForExcel };

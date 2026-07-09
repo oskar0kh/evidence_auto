@@ -24,9 +24,9 @@ import {
 } from './pathUtils';
 
 export interface PersistResultsOptions {
-  /** 갤러리 검색을 선택한 경우에만 파일명에 포함한다. */
-  communityName?: string;
   keyword?: string;
+  galleryName?: string;
+  communityName?: string;
 }
 
 interface ShardState {
@@ -57,8 +57,9 @@ export interface CrawlPersistSession {
   /** 결과물_{stamp} 루트 폴더 핸들 */
   resultsRoot: FileSystemDirectoryHandle;
   stamp: string;
-  communityName?: string;
   keyword?: string;
+  galleryName?: string;
+  communityName?: string;
   seenUrls: Set<string>;
   shardIndex: number;
   shard: ShardState | null;
@@ -82,8 +83,9 @@ export async function createCrawlPersistSession(
     directory,
     resultsRoot,
     stamp,
-    communityName: options.communityName,
     keyword: options.keyword,
+    galleryName: options.galleryName,
+    communityName: options.communityName,
     seenUrls: new Set<string>(),
     shardIndex: 0,
     shard: null,
@@ -100,11 +102,12 @@ async function openNextShard(session: CrawlPersistSession): Promise<ShardState> 
   const folderName = buildShardFolderName(startSerial, optimisticEnd);
   const resultDir = await getOrCreateSubdirectory(session.resultsRoot, folderName);
   const screenshotDir = await getOrCreateSubdirectory(resultDir, SCREENSHOT_DIR);
-  const excelFilename = buildExcelFilename(
-    session.communityName,
-    session.keyword,
-    session.stamp
-  );
+  const excelFilename = buildExcelFilename({
+    keyword: session.keyword,
+    communityName: session.communityName,
+    galleryName: session.galleryName,
+    stamp: session.stamp,
+  });
   const { workbook, sheet } = createCrimeListWorkbook();
   const shard: ShardState = {
     resultDir,
