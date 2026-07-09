@@ -282,6 +282,78 @@ export async function getOrCreateLogDirectory(
   return getOrCreateSubdirectory(saveDirectory, CRAWL_LOG_DIR);
 }
 
+export interface IncrementalCrawlLogHandle {
+  rowNumber: number;
+  logDate: Date;
+  executedAt: string;
+}
+
+const logFileWriteQueues = new Map<string, Promise<void>>();
+
+function enqueueLogFileWrite(filename: string, task: () => Promise<void>): Promise<void> {
+  const previous = logFileWriteQueues.get(filename) ?? Promise.resolve();
+  const next = previous.then(task, task).finally(() => {
+    if (logFileWriteQueues.get(filename) === next) {
+      logFileWriteQueues.delete(filename);
+    }
+  });
+  logFileWriteQueues.set(filename, next);
+  return next;
+}
+
+function applyEntryToRow(sheet: ExcelJS.Worksheet, rowNumber: number, entry: CrawlLogEntry): void {
+  const rowValues = buildRowValues(entry);
+  const row = sheet.getRow(rowNumber);
+  COLUMNS.forEach((column, index) => {
+    row.getCell(index + 1).value = rowValues[column.key];
+  });
+  row.alignment = { vertical: 'top', wrapText: true };
+}
+
+async function persistCrawlLogWorkbook(
+  logDirectory: FileSystemDirectoryHandle,
+  filename: string,
+  workbook: ExcelJS.Workbook
+): Promise<void> {
+  const buffer = await workbook.xlsx.writeBuffer();
+  await writeArrayBufferToDirectory(logDirectory, filename, buffer);
+}
+
+export async function beginIncrementalCrawlLog(
+  saveDirectory: FileSystemDirectoryHandle,
+  entry: CrawlLogEntry,
+  date = new Date()
+): Promise<IncrementalCrawlLogHandle> {
+  const logDirectory = await getOrCreateLogDirectory(saveDirectory);
+  const filename = buildDailyCrawlLogFilename(date);
+  let rowNumber = 0;
+
+  await enqueueLogFileWrite(filename, async () => {
+    const { workbook, sheet } = await loadOrCreateWorkbook(logDirectory, filename);
+    const row = sheet.addRow(COLUMNS.map((column) => buildRowValues(entry)[column.key]));
+    row.alignment = { vertical: 'top', wrapText: true };
+    rowNumber = row.number;
+    await persistCrawlLogWorkbook(logDirectory, filename, workbook);
+  });
+
+  return { rowNumber, logDate: date, executedAt: entry.executedAt };
+}
+
+export async function updateCrawlLogEntry(
+  saveDirectory: FileSystemDirectoryHandle,
+  handle: IncrementalCrawlLogHandle,
+  entry: CrawlLogEntry
+): Promise<void> {
+  const logDirectory = await getOrCreateLogDirectory(saveDirectory);
+  const filename = buildDailyCrawlLogFilename(handle.logDate);
+
+  await enqueueLogFileWrite(filename, async () => {
+    const { workbook, sheet } = await loadOrCreateWorkbook(logDirectory, filename);
+    applyEntryToRow(sheet, handle.rowNumber, entry);
+    await persistCrawlLogWorkbook(logDirectory, filename, workbook);
+  });
+}
+
 export async function appendCrawlLogEntry(
   saveDirectory: FileSystemDirectoryHandle,
   entry: CrawlLogEntry,
@@ -289,13 +361,24 @@ export async function appendCrawlLogEntry(
 ): Promise<void> {
   const logDirectory = await getOrCreateLogDirectory(saveDirectory);
   const filename = buildDailyCrawlLogFilename(date);
-  const { workbook, sheet } = await loadOrCreateWorkbook(logDirectory, filename);
-  const rowValues = buildRowValues(entry);
-  const row = sheet.addRow(COLUMNS.map((column) => rowValues[column.key]));
-  row.alignment = { vertical: 'top', wrapText: true };
 
-  const buffer = await workbook.xlsx.writeBuffer();
-  await writeArrayBufferToDirectory(logDirectory, filename, buffer);
+  await enqueueLogFileWrite(filename, async () => {
+    const { workbook, sheet } = await loadOrCreateWorkbook(logDirectory, filename);
+    const row = sheet.addRow(COLUMNS.map((column) => buildRowValues(entry)[column.key]));
+    row.alignment = { vertical: 'top', wrapText: true };
+    await persistCrawlLogWorkbook(logDirectory, filename, workbook);
+  });
+}
+
+export function mergeUrlTimings(existing: UrlTiming[], incoming: UrlTiming[]): UrlTiming[] {
+  const byUrl = new Map<string, UrlTiming>();
+  for (const timing of existing) {
+    byUrl.set(timing.url, timing);
+  }
+  for (const timing of incoming) {
+    byUrl.set(timing.url, timing);
+  }
+  return [...byUrl.values()];
 }
 
 export function aggregateStepTimings(

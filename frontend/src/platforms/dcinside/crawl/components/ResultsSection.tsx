@@ -6,26 +6,29 @@ interface ResultsSectionProps {
 }
 
 export default function ResultsSection({ savedCount, resultsPreview }: ResultsSectionProps) {
-  if (savedCount === 0) {
+  const previewCount = resultsPreview.length;
+  if (previewCount === 0 && savedCount === 0) {
     return null;
   }
+
+  const displayCount = Math.max(savedCount, ...resultsPreview.map((post) => post.serial), 0);
 
   return (
     <section className="result-section">
       <div className="result-section-header">
-        <h2>저장된 크롤링 결과 ({savedCount}건)</h2>
-        {savedCount > resultsPreview.length && (
+        <h2>저장된 크롤링 결과 ({displayCount}건)</h2>
+        {displayCount > previewCount && (
           <p className="field-hint">
-            최근 {resultsPreview.length}건만 미리보기로 표시합니다. 전체 결과는 선택한 폴더에
+            최근 {previewCount}건만 미리보기로 표시합니다. 전체 결과는 선택한 폴더에
             저장됐습니다.
           </p>
         )}
       </div>
       <div className="result-list">
-        {resultsPreview.map((post, index) => (
+        {resultsPreview.map((post) => (
           <article key={post.url} className="result-card">
             <h3>
-              <span className="result-serial">{savedCount - index}.</span> {post.title}
+              <span className="result-serial">{post.serial}.</span> {post.title}
             </h3>
             <dl>
               <div>

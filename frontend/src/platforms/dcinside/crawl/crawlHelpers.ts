@@ -1,11 +1,15 @@
 import {
   aggregateStepTimings,
   appendCrawlLogEntry,
+  beginIncrementalCrawlLog,
+  buildExtraStreamFailures,
   formatExecutedAt,
   formatFailureReasons,
   mergeCrawlFailures,
   pickFirstStepMs,
   pickStepMs,
+  updateCrawlLogEntry,
+  type IncrementalCrawlLogHandle,
 } from './crawlLogExport';
 import {
   countUrlBudgetTimeouts,
@@ -29,6 +33,7 @@ import type { GalleryCandidate } from '../search/types';
 import type { DcinsidePostData } from '../types';
 
 export interface SavedResultPreview {
+  serial: number;
   url: string;
   title: string;
   galleryName: string;
@@ -39,8 +44,9 @@ export interface SavedResultPreview {
   captureFilePath: string;
 }
 
-export function toResultPreview(post: DcinsidePostData): SavedResultPreview {
+export function toResultPreview(post: DcinsidePostData, serial: number): SavedResultPreview {
   return {
+    serial,
     url: post.url,
     title: post.title,
     galleryName: post.galleryName ?? '',
@@ -55,12 +61,15 @@ export function toResultPreview(post: DcinsidePostData): SavedResultPreview {
 export function appendResultPreviews(
   existing: SavedResultPreview[],
   posts: DcinsidePostData[],
+  startSerial: number,
   max = RESULTS_PREVIEW_SIZE
 ): SavedResultPreview[] {
   if (posts.length === 0) {
     return existing;
   }
-  const incoming = posts.map(toResultPreview).reverse();
+  const incoming = posts
+    .map((post, index) => toResultPreview(post, startSerial + index))
+    .reverse();
   const merged = [...incoming, ...existing];
   return merged.length > max ? merged.slice(0, max) : merged;
 }
@@ -256,37 +265,39 @@ export function computeProgressLabel(progress: CrawlProgress | null, loading: bo
   return `처리 ${progress.completed}건${discovered}`;
 }
 
-export async function saveCrawlLog(
-  directory: FileSystemDirectoryHandle | null,
-  context: CrawlLogContext,
-  attemptedCount: number,
-  successCount: number,
-  errors: CrawlFailureRecord[],
-  totalMs: number,
-  timings: UrlTiming[],
-  extraFailures: CrawlFailureRecord[] = [],
-  sessionMetrics?: CrawlSessionMetrics | null
-): Promise<void> {
-  if (!directory) {
-    return;
-  }
+export interface CrawlLogSnapshot {
+  attemptedCount: number;
+  successCount: number;
+  errors: CrawlFailureRecord[];
+  timings: UrlTiming[];
+  totalMs: number;
+  extraFailures?: CrawlFailureRecord[];
+  sessionMetrics?: CrawlSessionMetrics | null;
+}
 
-  const mergedFailures = mergeCrawlFailures(errors, timings, extraFailures);
-  const stepDetails = aggregateStepTimings(timings);
-  const metrics = sessionMetrics ?? createCrawlSessionMetrics();
+export function buildCrawlLogEntry(
+  context: CrawlLogContext,
+  snapshot: CrawlLogSnapshot,
+  executedAt: string
+): CrawlLogEntry {
+  const extraFailures = snapshot.extraFailures ?? [];
+  const mergedFailures = mergeCrawlFailures(snapshot.errors, snapshot.timings, extraFailures);
+  const stepDetails = aggregateStepTimings(snapshot.timings);
+  const metrics = snapshot.sessionMetrics ?? createCrawlSessionMetrics();
   countUrlBudgetTimeouts(metrics, mergedFailures);
   const formattedMetrics = formatCrawlSessionMetricsForLog(metrics);
-  const entry: CrawlLogEntry = {
-    executedAt: formatExecutedAt(),
+
+  return {
+    executedAt,
     keyword: context.keyword,
     searchDateRange: context.searchDateRange,
     galleryName: context.galleryName,
     inputMode: context.inputMode,
-    attemptedCount,
-    successCount,
-    failCount: Math.max(attemptedCount - successCount, mergedFailures.length),
+    attemptedCount: snapshot.attemptedCount,
+    successCount: snapshot.successCount,
+    failCount: Math.max(snapshot.attemptedCount - snapshot.successCount, mergedFailures.length),
     failureReasons: formatFailureReasons(mergedFailures),
-    totalMs,
+    totalMs: snapshot.totalMs,
     textCrawlMs:
       pickFirstStepMs(stepDetails, 'text-crawl') ??
       pickStepMs(stepDetails, 'fetch-page', 'parse-html', 'fetch-comments', 'build-result'),
@@ -300,8 +311,132 @@ export async function saveCrawlLog(
     urlRetrySummary: formattedMetrics.urlRetrySummary,
     healthSummary: formattedMetrics.healthSummary,
   };
+}
+
+export interface CrawlLogSession {
+  handle: IncrementalCrawlLogHandle;
+  flush: (snapshot: CrawlLogSnapshot) => Promise<void>;
+}
+
+export async function beginCrawlLogSession(
+  directory: FileSystemDirectoryHandle | null,
+  context: CrawlLogContext
+): Promise<CrawlLogSession | null> {
+  if (!directory) {
+    return null;
+  }
+
+  const executedAt = formatExecutedAt();
+  const initialEntry = buildCrawlLogEntry(
+    context,
+    {
+      attemptedCount: 0,
+      successCount: 0,
+      errors: [],
+      timings: [],
+      totalMs: 0,
+      sessionMetrics: createCrawlSessionMetrics(),
+    },
+    executedAt
+  );
 
   try {
+    const handle = await beginIncrementalCrawlLog(directory, initialEntry);
+    return {
+      handle,
+      flush: async (snapshot) => {
+        const entry = buildCrawlLogEntry(context, snapshot, handle.executedAt);
+        await updateCrawlLogEntry(directory, handle, entry);
+      },
+    };
+  } catch (e) {
+    console.error('크롤링 로그 초기화 실패:', e);
+    return null;
+  }
+}
+
+export function buildLiveCrawlLogSnapshot(params: {
+  successCount: number;
+  totalFailCount: number;
+  batchErrors: CrawlFailureRecord[];
+  batchTimings: UrlTiming[];
+  crawlStartAtMs: number | null;
+  sessionMetrics?: CrawlSessionMetrics | null;
+  plannedAttemptedCount?: number;
+  interruptMessage?: string;
+  savedCount?: number;
+}): CrawlLogSnapshot {
+  const totalMs = params.crawlStartAtMs !== null ? Date.now() - params.crawlStartAtMs : 0;
+  const processedCount = new Set([
+    ...params.batchTimings.map((timing) => timing.url),
+    ...params.batchErrors.map((error) => error.url),
+  ]).size;
+  const successFromTimings = params.batchTimings.filter((timing) => timing.success).length;
+  const successCount = Math.max(
+    params.successCount,
+    successFromTimings,
+    params.savedCount ?? 0
+  );
+  const attemptedCount =
+    params.plannedAttemptedCount ??
+    Math.max(successCount + params.totalFailCount, processedCount);
+
+  return {
+    attemptedCount,
+    successCount,
+    errors: params.batchErrors,
+    timings: params.batchTimings,
+    totalMs,
+    extraFailures: buildExtraStreamFailures(params.batchErrors, params.interruptMessage),
+    sessionMetrics: params.sessionMetrics,
+  };
+}
+
+export function scheduleCrawlLogFlush(
+  session: CrawlLogSession | null,
+  snapshot: CrawlLogSnapshot
+): void {
+  if (!session) {
+    return;
+  }
+  void session.flush(snapshot).catch((e) => {
+    console.error('크롤링 로그 증분 저장 실패:', e);
+  });
+}
+
+export async function saveCrawlLog(
+  directory: FileSystemDirectoryHandle | null,
+  context: CrawlLogContext,
+  attemptedCount: number,
+  successCount: number,
+  errors: CrawlFailureRecord[],
+  totalMs: number,
+  timings: UrlTiming[],
+  extraFailures: CrawlFailureRecord[] = [],
+  sessionMetrics?: CrawlSessionMetrics | null,
+  incrementalHandle?: IncrementalCrawlLogHandle | null
+): Promise<void> {
+  if (!directory) {
+    return;
+  }
+
+  const snapshot: CrawlLogSnapshot = {
+    attemptedCount,
+    successCount,
+    errors,
+    timings,
+    totalMs,
+    extraFailures,
+    sessionMetrics,
+  };
+  const executedAt = incrementalHandle?.executedAt ?? formatExecutedAt();
+  const entry = buildCrawlLogEntry(context, snapshot, executedAt);
+
+  try {
+    if (incrementalHandle) {
+      await updateCrawlLogEntry(directory, incrementalHandle, entry);
+      return;
+    }
     await appendCrawlLogEntry(directory, entry);
   } catch (e) {
     console.error('크롤링 로그 저장 실패:', e);

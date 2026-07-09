@@ -7,7 +7,7 @@ import {
   persistCrimeListAndCaptures,
   type CrawlPersistSession,
 } from '../export/persistResults';
-import { CRAWL_BATCH_SIZE, SAVED_COUNT_UI_UPDATE_INTERVAL, chunkArray } from './constants';
+import { CRAWL_BATCH_SIZE, chunkArray } from './constants';
 import {
   collectCrawlResponse,
   collectProcessedUrls,
@@ -17,6 +17,8 @@ import {
 import {
   type CrawlLogContext,
   type CrawlProgress,
+  beginCrawlLogSession,
+  buildLiveCrawlLogSnapshot,
   formatGalleryLabel,
   hasPartialDateRange,
   isValidDateRange,
@@ -25,7 +27,9 @@ import {
   parseUrls,
   saveBatchResults,
   saveCrawlLog,
+  scheduleCrawlLogFlush,
   appendResultPreviews,
+  type CrawlLogSession,
   type SavedResultPreview,
 } from './crawlHelpers';
 import {
@@ -36,7 +40,7 @@ import {
   observeUrlTiming,
   type CrawlSessionMetrics,
 } from './crawlSessionMetrics';
-import { buildExtraStreamFailures, mergeCrawlFailures } from './crawlLogExport';
+import { buildExtraStreamFailures, mergeCrawlFailures, mergeUrlTimings } from './crawlLogExport';
 import { isAbortError } from '../../../shared/lib/abort';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from '../../../shared/lib/nativeFolderPicker';
 import type { CrawlFailureRecord, CrawlHealthEvent, CrawlProgressEvent, UrlTiming } from './types';
@@ -78,7 +82,6 @@ export function useCrawlOrchestrator() {
   const crawlAbortRef = useRef<AbortController | null>(null);
   const sessionMetricsRef = useRef<CrawlSessionMetrics | null>(null);
   const savedCountRef = useRef(0);
-  const pendingSavedCountUiRef = useRef(0);
   const lastSearchKeywordRef = useRef<string | undefined>(undefined);
   const lastGalleryNameRef = useRef<string | undefined>(undefined);
 
@@ -96,7 +99,6 @@ export function useCrawlOrchestrator() {
 
   const syncSavedCountRef = () => {
     savedCountRef.current = savedCount;
-    pendingSavedCountUiRef.current = 0;
   };
 
   const bumpSavedCount = (delta: number) => {
@@ -104,17 +106,12 @@ export function useCrawlOrchestrator() {
       return;
     }
     savedCountRef.current += delta;
-    pendingSavedCountUiRef.current += delta;
-    if (pendingSavedCountUiRef.current >= SAVED_COUNT_UI_UPDATE_INTERVAL) {
-      setSavedCount(savedCountRef.current);
-      pendingSavedCountUiRef.current = 0;
-    }
+    setSavedCount(savedCountRef.current);
   };
 
   const flushSavedCount = () => {
-    if (pendingSavedCountUiRef.current > 0 || savedCountRef.current !== savedCount) {
+    if (savedCountRef.current !== savedCount) {
       setSavedCount(savedCountRef.current);
-      pendingSavedCountUiRef.current = 0;
     }
   };
 
@@ -122,7 +119,9 @@ export function useCrawlOrchestrator() {
     if (posts.length === 0) {
       return;
     }
-    setResultsPreview((prev) => appendResultPreviews(prev, posts));
+    const endSerial = savedCountRef.current;
+    const startSerial = endSerial - posts.length + 1;
+    setResultsPreview((prev) => appendResultPreviews(prev, posts, startSerial));
   };
 
   const beginCrawlSession = (): AbortSignal => {
@@ -213,7 +212,7 @@ export function useCrawlOrchestrator() {
     });
 
     const batchErrors: CrawlFailureRecord[] = [];
-    const batchTimings: UrlTiming[] = [];
+    let batchTimings: UrlTiming[] = [];
     const processedUrls = new Set<string>();
     let successCount = 0;
     let totalFailCount = 0;
@@ -224,7 +223,42 @@ export function useCrawlOrchestrator() {
     let autoSaved = false;
     let totalSavedCount = 0;
     let persistSession: CrawlPersistSession | null = null;
+    let crawlLogSession: CrawlLogSession | null = null;
     syncSavedCountRef();
+
+    if (saveDirectoryRef.current) {
+      crawlLogSession = await beginCrawlLogSession(
+        saveDirectoryRef.current,
+        options.logContext
+      );
+    }
+
+    const flushCrawlLog = () => {
+      scheduleCrawlLogFlush(
+        crawlLogSession,
+        buildLiveCrawlLogSnapshot({
+          successCount,
+          totalFailCount,
+          batchErrors,
+          batchTimings,
+          crawlStartAtMs: crawlStartAtRef.current,
+          sessionMetrics: sessionMetricsRef.current,
+          interruptMessage,
+          savedCount: totalSavedCount,
+        })
+      );
+    };
+
+    const onStreamUrlTiming = (timing: UrlTiming) => {
+      applyUrlTimingUpdate(timing);
+      batchTimings = mergeUrlTimings(batchTimings, [timing]);
+      flushCrawlLog();
+    };
+
+    const onStreamUrlError = (error: CrawlFailureRecord) => {
+      batchErrors.push(error);
+      flushCrawlLog();
+    };
 
     try {
       const response = await searchCrawlDcinsideStream(
@@ -258,6 +292,7 @@ export function useCrawlOrchestrator() {
             appendSavedPreviews(saved.postsForExcel);
             totalSavedCount += saved.postsForExcel.length;
             autoSaved = true;
+            flushCrawlLog();
           } catch (e) {
             const saveMessage =
               e instanceof Error ? e.message : '자동 저장 중 오류가 발생했습니다.';
@@ -268,12 +303,14 @@ export function useCrawlOrchestrator() {
         },
         abortSignal,
         applyHealthUpdate,
-        applyUrlTimingUpdate
+        onStreamUrlTiming,
+        onStreamUrlError
       );
 
       mergeOperationEvents(sessionMetricsRef.current, response.operationEvents ?? []);
 
       const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
+      batchTimings = mergeUrlTimings(batchTimings, response.timings ?? []);
       collectProcessedUrls(response, processedUrls);
       successCount += batchSuccess;
       totalFailCount += response.failCount ?? response.errors.length;
@@ -364,7 +401,8 @@ export function useCrawlOrchestrator() {
         totalMs,
         batchTimings,
         extraStreamFailures,
-        sessionMetricsRef.current
+        sessionMetricsRef.current,
+        crawlLogSession?.handle ?? null
       );
       sessionMetricsRef.current = null;
       setLoading(false);
@@ -424,7 +462,7 @@ export function useCrawlOrchestrator() {
       : beginCrawlSession();
 
     const batchErrors: CrawlFailureRecord[] = [];
-    const batchTimings: UrlTiming[] = [];
+    let batchTimings: UrlTiming[] = [];
     const processedUrls = new Set<string>();
     let successCount = 0;
     let totalFailCount = 0;
@@ -443,6 +481,39 @@ export function useCrawlOrchestrator() {
     let nextSerial = savedCountRef.current + 1;
     let globalCompletedOffset = 0;
     syncSavedCountRef();
+
+    let crawlLogSession: CrawlLogSession | null = null;
+    if (saveDirectoryRef.current) {
+      crawlLogSession = await beginCrawlLogSession(saveDirectoryRef.current, logContext);
+    }
+
+    const flushCrawlLog = () => {
+      scheduleCrawlLogFlush(
+        crawlLogSession,
+        buildLiveCrawlLogSnapshot({
+          successCount,
+          totalFailCount,
+          batchErrors,
+          batchTimings,
+          crawlStartAtMs: crawlStartAtRef.current,
+          sessionMetrics: sessionMetricsRef.current,
+          plannedAttemptedCount: crawlUrls.length,
+          interruptMessage,
+          savedCount: totalSavedCount,
+        })
+      );
+    };
+
+    const onStreamUrlTiming = (timing: UrlTiming) => {
+      applyUrlTimingUpdate(timing);
+      batchTimings = mergeUrlTimings(batchTimings, [timing]);
+      flushCrawlLog();
+    };
+
+    const onStreamUrlError = (error: CrawlFailureRecord) => {
+      batchErrors.push(error);
+      flushCrawlLog();
+    };
 
     setProgress({
       completed: 0,
@@ -476,12 +547,14 @@ export function useCrawlOrchestrator() {
           abortSignal,
           options?.galleryId,
           applyHealthUpdate,
-          applyUrlTimingUpdate
+          onStreamUrlTiming,
+          onStreamUrlError
         );
 
         mergeOperationEvents(sessionMetricsRef.current, response.operationEvents ?? []);
 
         const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
+        batchTimings = mergeUrlTimings(batchTimings, response.timings ?? []);
         collectProcessedUrls(response, processedUrls);
         successCount += batchSuccess;
         totalFailCount += response.failCount ?? response.errors.length;
@@ -506,6 +579,7 @@ export function useCrawlOrchestrator() {
             appendSavedPreviews(saved.postsForExcel);
             totalSavedCount += saved.postsForExcel.length;
             autoSaved = true;
+            flushCrawlLog();
           } catch (e) {
             const saveMessage =
               e instanceof Error ? e.message : '배치 자동 저장 중 오류가 발생했습니다.';
@@ -518,6 +592,7 @@ export function useCrawlOrchestrator() {
         batchResults = [];
         nextSerial += batchSuccess;
         globalCompletedOffset += batchUrls.length;
+        flushCrawlLog();
 
         if (wasInterrupted) {
           break;
@@ -590,7 +665,8 @@ export function useCrawlOrchestrator() {
         totalMs,
         batchTimings,
         extraStreamFailures,
-        sessionMetricsRef.current
+        sessionMetricsRef.current,
+        crawlLogSession?.handle ?? null
       );
       sessionMetricsRef.current = null;
       setLoading(false);

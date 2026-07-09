@@ -29,8 +29,15 @@ export function observeCrawlHealth(metrics: CrawlSessionMetrics, health: CrawlHe
   metrics.healthMessages.push(withEventTimestamp(message, metrics.startedAtMs));
 }
 
+function shouldRecordUrlRetry(urlAttempt: number, urlAttemptPhase: string): boolean {
+  return !(urlAttemptPhase === 'fast' && urlAttempt === 1);
+}
+
 export function observeCrawlProgress(metrics: CrawlSessionMetrics, event: CrawlProgressEvent): void {
   if (event.urlAttempt == null || event.urlAttemptMax == null || !event.urlAttemptPhase) {
+    return;
+  }
+  if (!shouldRecordUrlRetry(event.urlAttempt, event.urlAttemptPhase)) {
     return;
   }
   const phaseLabel = event.urlAttemptPhase === 'protective' ? 'Protective' : 'Fast';
@@ -55,6 +62,9 @@ export function observeCrawlProgress(metrics: CrawlSessionMetrics, event: CrawlP
 
 export function observeUrlTiming(metrics: CrawlSessionMetrics, timing: UrlTiming): void {
   if (timing.urlAttempt == null || timing.urlAttemptMax == null || !timing.urlAttemptPhase) {
+    return;
+  }
+  if (!shouldRecordUrlRetry(timing.urlAttempt, timing.urlAttemptPhase)) {
     return;
   }
   const phaseLabel = timing.urlAttemptPhase === 'protective' ? 'Protective' : 'Fast';
