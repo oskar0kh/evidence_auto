@@ -1,59 +1,33 @@
-import type { DcinsidePostData } from '../../types';
+import type { SavedResultPreview } from '../crawlHelpers';
 
 interface ResultsSectionProps {
-  savedResults: DcinsidePostData[];
-  paginatedResults: DcinsidePostData[];
-  resultStartIndex: number;
-  resultPage: number;
-  totalResultPages: number;
-  onPageChange: (page: number) => void;
+  savedCount: number;
+  resultsPreview: SavedResultPreview[];
 }
 
-export default function ResultsSection({
-  savedResults,
-  paginatedResults,
-  resultStartIndex,
-  resultPage,
-  totalResultPages,
-  onPageChange,
-}: ResultsSectionProps) {
-  if (savedResults.length === 0) {
+export default function ResultsSection({ savedCount, resultsPreview }: ResultsSectionProps) {
+  if (savedCount === 0) {
     return null;
   }
+
+  const previewStartSerial = Math.max(1, savedCount - resultsPreview.length + 1);
 
   return (
     <section className="result-section">
       <div className="result-section-header">
-        <h2>저장된 크롤링 결과 ({savedResults.length}건)</h2>
-        {totalResultPages > 1 && (
-          <div className="pagination">
-            <button
-              type="button"
-              className="btn pagination-btn"
-              onClick={() => onPageChange(Math.max(1, resultPage - 1))}
-              disabled={resultPage <= 1}
-            >
-              이전
-            </button>
-            <span className="pagination-info">
-              {resultPage} / {totalResultPages}
-            </span>
-            <button
-              type="button"
-              className="btn pagination-btn"
-              onClick={() => onPageChange(Math.min(totalResultPages, resultPage + 1))}
-              disabled={resultPage >= totalResultPages}
-            >
-              다음
-            </button>
-          </div>
+        <h2>저장된 크롤링 결과 ({savedCount}건)</h2>
+        {savedCount > resultsPreview.length && (
+          <p className="field-hint">
+            최근 {resultsPreview.length}건만 미리보기로 표시합니다. 전체 결과는 선택한 폴더에
+            저장됐습니다.
+          </p>
         )}
       </div>
       <div className="result-list">
-        {paginatedResults.map((post, index) => (
+        {resultsPreview.map((post, index) => (
           <article key={post.url} className="result-card">
             <h3>
-              <span className="result-serial">{resultStartIndex + index + 1}.</span> {post.title}
+              <span className="result-serial">{previewStartSerial + index}.</span> {post.title}
             </h3>
             <dl>
               <div>
@@ -79,7 +53,6 @@ export default function ResultsSection({
                 <dd className="capture-path">{post.captureFilePath}</dd>
               </div>
             </dl>
-            <p className="preview-content">{post.content.slice(0, 300)}…</p>
           </article>
         ))}
       </div>

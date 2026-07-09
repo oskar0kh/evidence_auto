@@ -14,8 +14,8 @@ export default function App() {
         <h1>범죄일람표 크롤러</h1>
         <p>
           검색 크롤링은 URL을 찾는 즉시 수집·캡처합니다.<br></br> URL 직접 입력은 100건 단위로 진행되며, 각
-          배치가 끝날 때마다 선택한 폴더의 동일한 결과물 폴더에 엑셀·캡처가 자동 저장됩니다.<br></br> 저장
-          버튼은 화면에 누적된 결과를 새 폴더에 다시 저장할 때 사용합니다.
+          배치가 끝날 때마다 선택한 폴더의 동일한 결과물 폴더에 엑셀·캡처가 자동 저장됩니다.<br></br> 수동
+          저장 버튼은 화면에 별도로 보관된 결과를 새 폴더에 보낼 때 사용합니다.
         </p>
       </header>
 
@@ -39,7 +39,8 @@ export default function App() {
           onPickDirectory={() => void crawl.handlePickDirectory()}
           loading={crawl.loading}
           saving={crawl.saving}
-          savedResultsCount={crawl.savedResults.length}
+          savedResultsCount={crawl.savedCount}
+          manualExportAvailable={crawl.manualExportPosts.length > 0}
           lastCrawlDurationMs={crawl.lastCrawlDurationMs}
           infoMessage={crawl.infoMessage}
           error={crawl.error}
@@ -61,14 +62,7 @@ export default function App() {
           }
         />
 
-        <ResultsSection
-          savedResults={crawl.savedResults}
-          paginatedResults={crawl.paginatedResults}
-          resultStartIndex={crawl.resultStartIndex}
-          resultPage={crawl.resultPage}
-          totalResultPages={crawl.totalResultPages}
-          onPageChange={crawl.setResultPage}
-        />
+        <ResultsSection savedCount={crawl.savedCount} resultsPreview={crawl.resultsPreview} />
 
         <ErrorSection errors={crawl.errors} />
       </main>

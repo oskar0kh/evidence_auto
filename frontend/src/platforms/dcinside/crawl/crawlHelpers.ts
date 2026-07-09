@@ -23,9 +23,46 @@ import {
   type CrawlPersistSession,
   type PersistResultsOptions,
 } from '../export/persistResults';
+import { RESULTS_PREVIEW_SIZE } from './constants';
 import type { CrawlFailureRecord, CrawlHealthEvent, CrawlLogEntry, CrawlProgressEvent, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
 import type { DcinsidePostData } from '../types';
+
+export interface SavedResultPreview {
+  url: string;
+  title: string;
+  galleryName: string;
+  nickname: string;
+  postDate: string;
+  viewCount: number;
+  commentCount: number;
+  captureFilePath: string;
+}
+
+export function toResultPreview(post: DcinsidePostData): SavedResultPreview {
+  return {
+    url: post.url,
+    title: post.title,
+    galleryName: post.galleryName ?? '',
+    nickname: post.nickname,
+    postDate: post.postDate,
+    viewCount: post.viewCount,
+    commentCount: post.commentCount,
+    captureFilePath: post.captureFilePath,
+  };
+}
+
+export function appendResultPreviews(
+  existing: SavedResultPreview[],
+  posts: DcinsidePostData[],
+  max = RESULTS_PREVIEW_SIZE
+): SavedResultPreview[] {
+  if (posts.length === 0) {
+    return existing;
+  }
+  const merged = [...existing, ...posts.map(toResultPreview)];
+  return merged.length > max ? merged.slice(-max) : merged;
+}
 
 export const STAGE_LABELS: Record<string, string> = {
   search: '검색',

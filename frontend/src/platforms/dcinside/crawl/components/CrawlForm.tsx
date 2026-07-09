@@ -26,6 +26,7 @@ interface CrawlFormProps {
   loading: boolean;
   saving: boolean;
   savedResultsCount: number;
+  manualExportAvailable: boolean;
   lastCrawlDurationMs: number | null;
   infoMessage: string | null;
   error: string | null;
@@ -59,6 +60,7 @@ export default function CrawlForm({
   loading,
   saving,
   savedResultsCount,
+  manualExportAvailable,
   lastCrawlDurationMs,
   infoMessage,
   error,
@@ -218,7 +220,7 @@ export default function CrawlForm({
             type="button"
             className="btn secondary btn-with-spinner"
             onClick={onSaveExcel}
-            disabled={loading || saving || savedResultsCount === 0}
+            disabled={loading || saving || !manualExportAvailable}
             aria-busy={saving}
           >
             <span className="btn-label">범죄일람표, 캡처이미지 수동 저장</span>

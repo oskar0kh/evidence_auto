@@ -44,8 +44,8 @@ async function consumeCrawlSseStream(
 
     if (message.event === 'url-result') {
       const post = JSON.parse(message.data) as DcinsidePostData;
-      accumulated.data.push(post);
       await onUrlResult?.(post);
+      accumulated.data.push({ url: post.url } as DcinsidePostData);
       return;
     }
 

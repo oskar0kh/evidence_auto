@@ -7,7 +7,7 @@ import {
   persistCrimeListAndCaptures,
   type CrawlPersistSession,
 } from '../export/persistResults';
-import { CRAWL_BATCH_SIZE, RESULTS_PAGE_SIZE, chunkArray } from './constants';
+import { CRAWL_BATCH_SIZE, SAVED_COUNT_UI_UPDATE_INTERVAL, chunkArray } from './constants';
 import {
   collectCrawlResponse,
   collectProcessedUrls,
@@ -25,6 +25,8 @@ import {
   parseUrls,
   saveBatchResults,
   saveCrawlLog,
+  appendResultPreviews,
+  type SavedResultPreview,
 } from './crawlHelpers';
 import {
   createCrawlSessionMetrics,
@@ -66,14 +68,17 @@ export function useCrawlOrchestrator() {
   const [progress, setProgress] = useState<CrawlProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
-  const [savedResults, setSavedResults] = useState<DcinsidePostData[]>([]);
-  const [resultPage, setResultPage] = useState(1);
+  const [savedCount, setSavedCount] = useState(0);
+  const [resultsPreview, setResultsPreview] = useState<SavedResultPreview[]>([]);
+  const [manualExportPosts, setManualExportPosts] = useState<DcinsidePostData[]>([]);
   const [errors, setErrors] = useState<CrawlFailureRecord[]>([]);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [lastCrawlDurationMs, setLastCrawlDurationMs] = useState<number | null>(null);
   const crawlStartAtRef = useRef<number | null>(null);
   const crawlAbortRef = useRef<AbortController | null>(null);
   const sessionMetricsRef = useRef<CrawlSessionMetrics | null>(null);
+  const savedCountRef = useRef(0);
+  const pendingSavedCountUiRef = useRef(0);
   const lastSearchKeywordRef = useRef<string | undefined>(undefined);
   const lastGalleryNameRef = useRef<string | undefined>(undefined);
 
@@ -89,12 +94,36 @@ export function useCrawlOrchestrator() {
     return () => window.clearInterval(timerId);
   }, [loading]);
 
-  useEffect(() => {
-    const totalPages = Math.max(1, Math.ceil(savedResults.length / RESULTS_PAGE_SIZE));
-    if (resultPage > totalPages) {
-      setResultPage(totalPages);
+  const syncSavedCountRef = () => {
+    savedCountRef.current = savedCount;
+    pendingSavedCountUiRef.current = 0;
+  };
+
+  const bumpSavedCount = (delta: number) => {
+    if (delta <= 0) {
+      return;
     }
-  }, [savedResults.length, resultPage]);
+    savedCountRef.current += delta;
+    pendingSavedCountUiRef.current += delta;
+    if (pendingSavedCountUiRef.current >= SAVED_COUNT_UI_UPDATE_INTERVAL) {
+      setSavedCount(savedCountRef.current);
+      pendingSavedCountUiRef.current = 0;
+    }
+  };
+
+  const flushSavedCount = () => {
+    if (pendingSavedCountUiRef.current > 0 || savedCountRef.current !== savedCount) {
+      setSavedCount(savedCountRef.current);
+      pendingSavedCountUiRef.current = 0;
+    }
+  };
+
+  const appendSavedPreviews = (posts: DcinsidePostData[]) => {
+    if (posts.length === 0) {
+      return;
+    }
+    setResultsPreview((prev) => appendResultPreviews(prev, posts));
+  };
 
   const beginCrawlSession = (): AbortSignal => {
     crawlAbortRef.current?.abort();
@@ -195,6 +224,7 @@ export function useCrawlOrchestrator() {
     let autoSaved = false;
     let totalSavedCount = 0;
     let persistSession: CrawlPersistSession | null = null;
+    syncSavedCountRef();
 
     try {
       const response = await searchCrawlDcinsideStream(
@@ -205,7 +235,7 @@ export function useCrawlOrchestrator() {
           endDate: options.useDateRange ? searchEndDate : undefined,
           galleryId: options.useGallerySearch ? options.galleryId : undefined,
         },
-        savedResults.length + 1,
+        savedCountRef.current + 1,
         (event) => {
           applyProgressUpdate(event);
         },
@@ -224,7 +254,8 @@ export function useCrawlOrchestrator() {
               }
             );
             persistSession = saved.session;
-            setSavedResults((prev) => mergeSavedResults(prev, saved.postsForExcel));
+            bumpSavedCount(saved.postsForExcel.length);
+            appendSavedPreviews(saved.postsForExcel);
             totalSavedCount += saved.postsForExcel.length;
             autoSaved = true;
           } catch (e) {
@@ -285,6 +316,7 @@ export function useCrawlOrchestrator() {
         setErrors(batchErrors);
       }
     } finally {
+      flushSavedCount();
       if (persistSession) {
         try {
           await finalizeCrawlPersistSession(persistSession);
@@ -408,8 +440,9 @@ export function useCrawlOrchestrator() {
     };
 
     const urlBatches = chunkArray(crawlUrls, CRAWL_BATCH_SIZE);
-    let nextSerial = savedResults.length + 1;
+    let nextSerial = savedCountRef.current + 1;
     let globalCompletedOffset = 0;
+    syncSavedCountRef();
 
     setProgress({
       completed: 0,
@@ -469,7 +502,8 @@ export function useCrawlOrchestrator() {
               }
             );
             persistSession = saved.session;
-            setSavedResults((prev) => mergeSavedResults(prev, saved.postsForExcel));
+            bumpSavedCount(saved.postsForExcel.length);
+            appendSavedPreviews(saved.postsForExcel);
             totalSavedCount += saved.postsForExcel.length;
             autoSaved = true;
           } catch (e) {
@@ -511,6 +545,7 @@ export function useCrawlOrchestrator() {
         batchErrors.push({ url: '(크롤링)', error: errorMessage, stage: 'session' });
       }
     } finally {
+      flushSavedCount();
       if (persistSession) {
         try {
           await finalizeCrawlPersistSession(persistSession);
@@ -710,8 +745,14 @@ export function useCrawlOrchestrator() {
   };
 
   const handleSaveExcel = async () => {
-    if (savedResults.length === 0) {
-      setError('저장할 데이터가 없습니다. 먼저 크롤링을 실행해 주세요.');
+    if (manualExportPosts.length === 0) {
+      if (savedCount > 0) {
+        setError(
+          '크롤 결과는 선택한 폴더에 자동 저장됐습니다. 수동 저장은 화면에 보관된 결과가 있을 때만 사용할 수 있습니다.'
+        );
+      } else {
+        setError('저장할 데이터가 없습니다. 먼저 크롤링을 실행해 주세요.');
+      }
       return;
     }
     if (!saveDirectoryRef.current) {
@@ -722,13 +763,13 @@ export function useCrawlOrchestrator() {
     try {
       const { postsForExcel } = await persistCrimeListAndCaptures(
         saveDirectoryRef.current,
-        savedResults,
+        manualExportPosts,
         {
           keyword: lastSearchKeywordRef.current,
           galleryName: lastGalleryNameRef.current,
         }
       );
-      setSavedResults(postsForExcel);
+      setManualExportPosts(postsForExcel);
       setError(null);
       setInfoMessage(null);
       window.alert('저장이 완료됐습니다.');
@@ -739,13 +780,6 @@ export function useCrawlOrchestrator() {
       setSaving(false);
     }
   };
-
-  const totalResultPages = Math.max(1, Math.ceil(savedResults.length / RESULTS_PAGE_SIZE));
-  const paginatedResults = savedResults.slice(
-    (resultPage - 1) * RESULTS_PAGE_SIZE,
-    resultPage * RESULTS_PAGE_SIZE
-  );
-  const resultStartIndex = (resultPage - 1) * RESULTS_PAGE_SIZE;
 
   return {
     urlInput,
@@ -767,15 +801,12 @@ export function useCrawlOrchestrator() {
     progress,
     error,
     infoMessage,
-    savedResults,
-    resultPage,
-    setResultPage,
+    savedCount,
+    resultsPreview,
+    manualExportPosts,
     errors,
     elapsedMs,
     lastCrawlDurationMs,
-    totalResultPages,
-    paginatedResults,
-    resultStartIndex,
     handleCancelCrawl,
     handlePickDirectory,
     handleCrawl,
