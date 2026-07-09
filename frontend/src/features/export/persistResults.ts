@@ -24,7 +24,8 @@ import {
 } from './pathUtils';
 
 export interface PersistResultsOptions {
-  communityName: string;
+  /** 갤러리 검색을 선택한 경우에만 파일명에 포함한다. */
+  communityName?: string;
   keyword?: string;
 }
 
@@ -56,7 +57,7 @@ export interface CrawlPersistSession {
   /** 결과물_{stamp} 루트 폴더 핸들 */
   resultsRoot: FileSystemDirectoryHandle;
   stamp: string;
-  communityName: string;
+  communityName?: string;
   keyword?: string;
   seenUrls: Set<string>;
   shardIndex: number;

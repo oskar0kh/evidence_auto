@@ -17,12 +17,12 @@ import {
 import {
   type CrawlLogContext,
   type CrawlProgress,
-  deriveCommunityName,
   formatGalleryLabel,
   hasPartialDateRange,
   isValidDateRange,
   mergeSavedResults,
   parseUrls,
+  resolveExcelCommunityName,
   saveBatchResults,
   saveCrawlLog,
 } from './crawlHelpers';
@@ -66,6 +66,7 @@ export function useCrawlOrchestrator() {
   const crawlStartAtRef = useRef<number | null>(null);
   const crawlAbortRef = useRef<AbortController | null>(null);
   const lastSearchKeywordRef = useRef<string | undefined>(undefined);
+  const lastIncludeGalleryInFilenameRef = useRef(false);
 
   useEffect(() => {
     if (!loading) {
@@ -203,7 +204,7 @@ export function useCrawlOrchestrator() {
               persistSession,
               [post],
               saveDirectoryRef.current,
-              deriveCommunityName([post]),
+              resolveExcelCommunityName([post], options.useGallerySearch),
               lastSearchKeywordRef.current
             );
             persistSession = saved.session;
@@ -436,7 +437,7 @@ export function useCrawlOrchestrator() {
               persistSession,
               batchResults,
               saveDirectoryRef.current,
-              deriveCommunityName(batchResults),
+              resolveExcelCommunityName(batchResults, Boolean(options?.galleryId?.trim())),
               lastSearchKeywordRef.current
             );
             persistSession = saved.session;
@@ -560,6 +561,7 @@ export function useCrawlOrchestrator() {
     }
 
     lastSearchKeywordRef.current = undefined;
+    lastIncludeGalleryInFilenameRef.current = false;
     await runCrawlForUrls(urls, {
       clearUrlInput: true,
       logContext: { inputMode: 'URL 직접입력' },
@@ -656,6 +658,7 @@ export function useCrawlOrchestrator() {
         : '검색어';
 
     lastSearchKeywordRef.current = query;
+    lastIncludeGalleryInFilenameRef.current = useGallerySearch;
     await runSearchCrawl({
       query,
       useDateRange,
@@ -689,7 +692,10 @@ export function useCrawlOrchestrator() {
         saveDirectoryRef.current,
         savedResults,
         {
-          communityName: deriveCommunityName(savedResults),
+          communityName: resolveExcelCommunityName(
+            savedResults,
+            lastIncludeGalleryInFilenameRef.current
+          ),
           keyword: lastSearchKeywordRef.current,
         }
       );

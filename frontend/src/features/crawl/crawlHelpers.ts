@@ -89,6 +89,14 @@ export function deriveCommunityName(posts: DcinsidePostData[]): string {
   return uniqueNames.length === 1 ? uniqueNames[0] : '디시인사이드';
 }
 
+/** 갤러리 검색을 선택한 경우에만 엑셀 파일명용 갤러리명을 반환한다. */
+export function resolveExcelCommunityName(
+  posts: DcinsidePostData[],
+  includeGalleryInFilename: boolean
+): string | undefined {
+  return includeGalleryInFilename ? deriveCommunityName(posts) : undefined;
+}
+
 export function parseUrls(input: string): string[] {
   return input
     .split(/\n|,/)
@@ -234,7 +242,7 @@ export async function saveBatchResults(
   session: CrawlPersistSession | null,
   batchResults: DcinsidePostData[],
   directory: FileSystemDirectoryHandle,
-  communityName: string,
+  communityName: string | undefined,
   keyword: string | undefined
 ): Promise<{ session: CrawlPersistSession; postsForExcel: DcinsidePostData[] }> {
   let activeSession = session;
