@@ -1,4 +1,4 @@
-import type { CrawlStreamResult, UrlTiming } from './types';
+import type { CrawlFailureRecord, CrawlStreamResult, UrlTiming } from './types';
 
 export const USER_CANCEL_REASON = '사용자 중도 취소';
 
@@ -16,13 +16,13 @@ export function collectProcessedUrls(response: CrawlStreamResult, processedUrls:
 
 export function appendUserCancelErrors(
   urls: string[],
-  batchErrors: { url: string; error: string }[],
+  batchErrors: CrawlFailureRecord[],
   processedUrls: Set<string>
 ): void {
   const existingErrorUrls = new Set(batchErrors.map((error) => error.url));
   for (const url of urls) {
     if (!processedUrls.has(url) && !existingErrorUrls.has(url)) {
-      batchErrors.push({ url, error: USER_CANCEL_REASON });
+      batchErrors.push({ url, error: USER_CANCEL_REASON, stage: 'session' });
       existingErrorUrls.add(url);
     }
   }
@@ -30,7 +30,7 @@ export function appendUserCancelErrors(
 
 export function collectCrawlResponse(
   response: CrawlStreamResult,
-  batchErrors: { url: string; error: string }[],
+  batchErrors: CrawlFailureRecord[],
   batchTimings: UrlTiming[]
 ): number {
   batchErrors.push(...response.errors);
@@ -65,7 +65,7 @@ export interface CrawlFinalizeInput {
   errorMessage: string | null;
   autoSaved: boolean;
   totalSavedCount: number;
-  batchErrors: { url: string; error: string }[];
+  batchErrors: CrawlFailureRecord[];
   processedUrls: Set<string>;
   cancelUrls?: string[];
 }

@@ -1,5 +1,8 @@
+import { formatFailureStageLabel } from '../crawlLogExport';
+import type { CrawlFailureRecord } from '../types';
+
 interface ErrorSectionProps {
-  errors: { url: string; error: string }[];
+  errors: CrawlFailureRecord[];
 }
 
 export default function ErrorSection({ errors }: ErrorSectionProps) {
@@ -11,9 +14,9 @@ export default function ErrorSection({ errors }: ErrorSectionProps) {
     <section className="error-section">
       <h2>실패한 URL</h2>
       <ul>
-        {errors.map((item) => (
-          <li key={item.url}>
-            <strong>{item.url}</strong>: {item.error}
+        {errors.map((item, index) => (
+          <li key={`${item.url}-${item.stage ?? 'unknown'}-${index}`}>
+            <strong>[{formatFailureStageLabel(item.stage)}] {item.url}</strong>: {item.error}
           </li>
         ))}
       </ul>

@@ -6,7 +6,7 @@ import {
 } from '../../shared/lib/excelUtils';
 import { formatLogDuration } from '../../shared/lib/formatDuration';
 import { getOrCreateSubdirectory, tryReadFileFromDirectory, writeArrayBufferToDirectory } from '../../shared/lib/localFileStorage';
-import type { CrawlLogEntry } from './types';
+import type { CrawlFailureRecord, CrawlLogEntry, UrlTiming } from './types';
 
 export const CRAWL_LOG_DIR = 'log';
 const SHEET_NAME = 'crawling_log';
@@ -56,6 +56,17 @@ const STEP_NAME_LABELS: Record<string, string> = {
   'write-temp-file': '임시 파일 저장',
 };
 
+const FAILURE_STAGE_LABELS: Record<string, string> = {
+  search: 'URL 수집',
+  'text-crawl': '텍스트 수집',
+  screenshot: '스크린샷',
+  'attach-capture': '결과 저장',
+  timeout: '시간 초과',
+  connection: 'HTTP 연결',
+  session: '세션/스트림',
+  'url-failed': '크롤 실패',
+};
+
 function formatOptionalDuration(ms: number | undefined): string {
   if (ms === undefined || ms === null) {
     return '';
@@ -76,11 +87,112 @@ export function formatStepLabel(stepName: string): string {
   return stepName;
 }
 
+export function formatFailureStageLabel(stage?: string): string {
+  if (!stage) {
+    return '크롤 실패';
+  }
+  return FAILURE_STAGE_LABELS[stage] ?? stage;
+}
+
 function formatStepDetails(steps: Record<string, number>): string {
   return Object.entries(steps)
     .sort(([a], [b]) => formatStepLabel(a).localeCompare(formatStepLabel(b), 'ko'))
     .map(([name, ms]) => `${formatStepLabel(name)}: ${formatLogDuration(ms)}`)
     .join('\n');
+}
+
+function failureKey(record: CrawlFailureRecord): string {
+  return `${record.url}\0${record.stage ?? ''}\0${record.error}`;
+}
+
+function inferStageFromTiming(timing: UrlTiming): string {
+  const stepNames = Object.keys(timing.steps);
+  if (stepNames.some((name) => name === 'screenshot' || name.startsWith('screenshot '))) {
+    return 'screenshot';
+  }
+  if (stepNames.some((name) => name.includes('create-driver') || name.includes('page-navigate'))) {
+    return 'screenshot';
+  }
+  if (stepNames.some((name) => name === 'text-crawl' || name.startsWith('fetch-') || name === 'parse-html')) {
+    return 'text-crawl';
+  }
+  return 'url-failed';
+}
+
+function inferErrorFromTiming(timing: UrlTiming): string {
+  const stage = inferStageFromTiming(timing);
+  const label = formatFailureStageLabel(stage);
+  return `[${label}] 해당 단계에서 실패했습니다. (총 ${formatLogDuration(timing.totalMs)})`;
+}
+
+export function mergeCrawlFailures(
+  errors: CrawlFailureRecord[],
+  timings: UrlTiming[] = [],
+  streamErrors: CrawlFailureRecord[] = []
+): CrawlFailureRecord[] {
+  const merged: CrawlFailureRecord[] = [];
+  const seen = new Set<string>();
+
+  const push = (record: CrawlFailureRecord) => {
+    const normalized: CrawlFailureRecord = {
+      url: record.url,
+      error: record.error,
+      stage: record.stage,
+    };
+    const key = failureKey(normalized);
+    if (seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    merged.push(normalized);
+  };
+
+  for (const error of errors) {
+    push(error);
+  }
+
+  const erroredUrls = new Set(errors.map((error) => error.url));
+  for (const timing of timings) {
+    if (timing.success || erroredUrls.has(timing.url)) {
+      continue;
+    }
+    push({
+      url: timing.url,
+      stage: inferStageFromTiming(timing),
+      error: inferErrorFromTiming(timing),
+    });
+  }
+
+  for (const streamError of streamErrors) {
+    push(streamError);
+  }
+
+  return merged;
+}
+
+export function buildExtraStreamFailures(
+  batchErrors: CrawlFailureRecord[],
+  interruptMessage?: string
+): CrawlFailureRecord[] {
+  if (!interruptMessage?.trim()) {
+    return [];
+  }
+  if (batchErrors.some((error) => error.url.startsWith('('))) {
+    return [];
+  }
+  return [{ url: '(크롤 스트림)', error: interruptMessage.trim(), stage: 'session' }];
+}
+
+export function formatFailureReasons(errors: CrawlFailureRecord[]): string {
+  if (errors.length === 0) {
+    return '';
+  }
+  return errors
+    .map((item) => {
+      const stageLabel = formatFailureStageLabel(item.stage);
+      return `[${stageLabel}] ${item.url}\n→ ${item.error}`;
+    })
+    .join('\n\n');
 }
 
 function buildRowValues(entry: CrawlLogEntry): Record<string, string | number> {
@@ -211,13 +323,6 @@ export function pickFirstStepMs(steps: Record<string, number>, ...names: string[
     }
   }
   return undefined;
-}
-
-export function formatFailureReasons(errors: { url: string; error: string }[]): string {
-  if (errors.length === 0) {
-    return '';
-  }
-  return errors.map((item) => `${item.url}\n→ ${item.error}`).join('\n\n');
 }
 
 export function formatExecutedAt(date = new Date()): string {

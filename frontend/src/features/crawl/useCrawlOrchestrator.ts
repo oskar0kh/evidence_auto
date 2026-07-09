@@ -26,9 +26,10 @@ import {
   saveBatchResults,
   saveCrawlLog,
 } from './crawlHelpers';
+import { buildExtraStreamFailures, mergeCrawlFailures } from './crawlLogExport';
 import { isAbortError } from '../../shared/lib/abort';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from '../../shared/lib/nativeFolderPicker';
-import type { CrawlHealthEvent, UrlTiming } from './types';
+import type { CrawlFailureRecord, CrawlHealthEvent, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
 import type { DcinsidePostData } from '../../platforms/dcinside/types';
 
@@ -59,7 +60,7 @@ export function useCrawlOrchestrator() {
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [savedResults, setSavedResults] = useState<DcinsidePostData[]>([]);
   const [resultPage, setResultPage] = useState(1);
-  const [errors, setErrors] = useState<{ url: string; error: string }[]>([]);
+  const [errors, setErrors] = useState<CrawlFailureRecord[]>([]);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [lastCrawlDurationMs, setLastCrawlDurationMs] = useState<number | null>(null);
   const crawlStartAtRef = useRef<number | null>(null);
@@ -160,7 +161,7 @@ export function useCrawlOrchestrator() {
       failCount: 0,
     });
 
-    const batchErrors: { url: string; error: string }[] = [];
+    const batchErrors: CrawlFailureRecord[] = [];
     const batchTimings: UrlTiming[] = [];
     const processedUrls = new Set<string>();
     let successCount = 0;
@@ -260,7 +261,7 @@ export function useCrawlOrchestrator() {
         errorMessage = '크롤링이 취소됐습니다.';
       } else {
         errorMessage = resolveCrawlError(e);
-        batchErrors.push({ url: '(검색·크롤링)', error: errorMessage });
+        batchErrors.push({ url: '(검색·크롤링)', error: errorMessage, stage: 'session' });
         setErrors(batchErrors);
       }
     } finally {
@@ -299,6 +300,9 @@ export function useCrawlOrchestrator() {
       if (crawlStartAtRef.current !== null) {
         setLastCrawlDurationMs(totalMs);
       }
+      const extraStreamFailures = buildExtraStreamFailures(batchErrors, interruptMessage);
+      const mergedErrors = mergeCrawlFailures(batchErrors, batchTimings, extraStreamFailures);
+      setErrors(mergedErrors);
       await saveCrawlLog(
         saveDirectoryRef.current,
         options.logContext,
@@ -306,7 +310,8 @@ export function useCrawlOrchestrator() {
         successCount,
         batchErrors,
         totalMs,
-        batchTimings
+        batchTimings,
+        extraStreamFailures
       );
       setLoading(false);
       setProgress(null);
@@ -360,7 +365,7 @@ export function useCrawlOrchestrator() {
       ? (crawlAbortRef.current?.signal ?? beginCrawlSession())
       : beginCrawlSession();
 
-    const batchErrors: { url: string; error: string }[] = [];
+    const batchErrors: CrawlFailureRecord[] = [];
     const batchTimings: UrlTiming[] = [];
     const processedUrls = new Set<string>();
     let successCount = 0;
@@ -474,7 +479,7 @@ export function useCrawlOrchestrator() {
         errorMessage = '크롤링이 취소됐습니다.';
       } else {
         errorMessage = resolveCrawlError(e);
-        batchErrors.push({ url: '(크롤링)', error: errorMessage });
+        batchErrors.push({ url: '(크롤링)', error: errorMessage, stage: 'session' });
       }
     } finally {
       if (persistSession) {
@@ -509,6 +514,9 @@ export function useCrawlOrchestrator() {
       if (crawlStartAtRef.current !== null) {
         setLastCrawlDurationMs(totalMs);
       }
+      const extraStreamFailures = buildExtraStreamFailures(batchErrors, interruptMessage);
+      const mergedErrors = mergeCrawlFailures(batchErrors, batchTimings, extraStreamFailures);
+      setErrors(mergedErrors);
       await saveCrawlLog(
         saveDirectoryRef.current,
         logContext,
@@ -516,7 +524,8 @@ export function useCrawlOrchestrator() {
         successCount,
         batchErrors,
         totalMs,
-        batchTimings
+        batchTimings,
+        extraStreamFailures
       );
       setLoading(false);
       setProgress(null);

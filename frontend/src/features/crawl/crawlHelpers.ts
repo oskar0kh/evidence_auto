@@ -3,6 +3,7 @@ import {
   appendCrawlLogEntry,
   formatExecutedAt,
   formatFailureReasons,
+  mergeCrawlFailures,
   pickFirstStepMs,
   pickStepMs,
 } from './crawlLogExport';
@@ -11,7 +12,7 @@ import {
   createCrawlPersistSession,
   type CrawlPersistSession,
 } from '../export/persistResults';
-import type { CrawlHealthEvent, CrawlLogEntry, UrlTiming } from './types';
+import type { CrawlFailureRecord, CrawlHealthEvent, CrawlLogEntry, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
 import type { DcinsidePostData } from '../../platforms/dcinside/types';
 
@@ -189,14 +190,16 @@ export async function saveCrawlLog(
   context: CrawlLogContext,
   attemptedCount: number,
   successCount: number,
-  errors: { url: string; error: string }[],
+  errors: CrawlFailureRecord[],
   totalMs: number,
-  timings: UrlTiming[]
+  timings: UrlTiming[],
+  extraFailures: CrawlFailureRecord[] = []
 ): Promise<void> {
   if (!directory) {
     return;
   }
 
+  const mergedFailures = mergeCrawlFailures(errors, timings, extraFailures);
   const stepDetails = aggregateStepTimings(timings);
   const entry: CrawlLogEntry = {
     executedAt: formatExecutedAt(),
@@ -206,8 +209,8 @@ export async function saveCrawlLog(
     inputMode: context.inputMode,
     attemptedCount,
     successCount,
-    failCount: Math.max(attemptedCount - successCount, errors.length),
-    failureReasons: formatFailureReasons(errors),
+    failCount: Math.max(attemptedCount - successCount, mergedFailures.length),
+    failureReasons: formatFailureReasons(mergedFailures),
     totalMs,
     textCrawlMs:
       pickFirstStepMs(stepDetails, 'text-crawl') ??

@@ -82,6 +82,12 @@ async function consumeCrawlSseStream(
     if (message.event === 'error') {
       const body = JSON.parse(message.data) as { error?: string };
       interruptMessage = body.error ?? '크롤링 중 오류가 발생했습니다.';
+      accumulated.errors.push({
+        url: '(크롤 스트림)',
+        error: interruptMessage,
+        stage: 'session',
+      });
+      return;
     }
   };
 

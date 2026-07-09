@@ -1,8 +1,14 @@
 import type { DcinsidePostData } from '../../platforms/dcinside/types';
 
+export interface CrawlFailureRecord {
+  url: string;
+  error: string;
+  stage?: string;
+}
+
 export interface CrawlResponse {
   data: DcinsidePostData[];
-  errors: { url: string; error: string; stage?: string }[];
+  errors: CrawlFailureRecord[];
   timings?: UrlTiming[];
 }
 

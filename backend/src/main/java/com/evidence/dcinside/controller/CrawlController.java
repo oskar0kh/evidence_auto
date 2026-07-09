@@ -12,6 +12,7 @@ import com.evidence.dcinside.fetch.DcinsideFetchEscalator;
 import com.evidence.dcinside.fetch.FetchedPage;
 import com.evidence.dcinside.fetch.FetchPhase;
 import com.evidence.dcinside.http.BlockSignal;
+import com.evidence.dcinside.http.ConnectionFailureDetector;
 import com.evidence.dcinside.http.CrawlThrottle;
 import com.evidence.dcinside.http.DcinsideHttpClient;
 import com.evidence.dcinside.service.DcinsideCrawlService;
@@ -44,6 +45,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
@@ -126,6 +128,11 @@ public class CrawlController {
                         emitter,
                         e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()
                 );
+                try {
+                    sendEvent(emitter, "url-error", errorEntry("(크롤 세션/스트림)", e));
+                } catch (Exception sendFailure) {
+                    log.warn("Failed to emit session url-error after stream failure", sendFailure);
+                }
             }
         });
 
@@ -452,21 +459,79 @@ public class CrawlController {
     }
 
     private static Map<String, String> errorEntry(String url, Exception e) {
+        String stage = resolveFailureStage(e);
         Map<String, String> entry = new HashMap<>();
         entry.put("url", url);
-        entry.put("error", e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
-        if (e instanceof StageTimedException stageTimed) {
-            entry.put("stage", stageTimed.stage());
-        }
+        entry.put("stage", stage);
+        entry.put("error", formatFailureMessage(e, stage));
         return entry;
     }
 
     private static Map<String, String> errorEntry(String url, String message, String stage) {
         Map<String, String> entry = new HashMap<>();
         entry.put("url", url);
-        entry.put("error", message);
         entry.put("stage", stage);
+        entry.put("error", formatFailureMessage(message, stage));
         return entry;
+    }
+
+    private static String resolveFailureStage(Exception e) {
+        if (e instanceof StageTimedException stageTimed) {
+            return stageTimed.stage();
+        }
+        if (e instanceof TimeoutException) {
+            return "timeout";
+        }
+        if (ConnectionFailureDetector.isConnectionFailure(e)) {
+            return "connection";
+        }
+        String message = e.getMessage() != null ? e.getMessage().toLowerCase(Locale.ROOT) : "";
+        if (message.contains("could not start a new session")
+                || message.contains("chromedriver")
+                || message.contains("chrome not reachable")
+                || message.contains("스크린샷")) {
+            return "screenshot";
+        }
+        if (message.contains("불러올 수 없습니다")
+                || message.contains("봇 차단")
+                || message.contains("파싱")
+                || message.contains("댓글")) {
+            return "text-crawl";
+        }
+        if (message.contains("검색")) {
+            return "search";
+        }
+        if (message.contains("세션") || message.contains("session")) {
+            return "session";
+        }
+        return "url-failed";
+    }
+
+    private static String formatFailureMessage(Exception e, String stage) {
+        String detail = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
+        return formatFailureMessage(detail, stage);
+    }
+
+    private static String formatFailureMessage(String detail, String stage) {
+        String label = failureStageLabel(stage);
+        if (label.isBlank()) {
+            return detail;
+        }
+        return "[" + label + "] " + detail;
+    }
+
+    private static String failureStageLabel(String stage) {
+        return switch (stage) {
+            case "search" -> "URL 수집";
+            case "text-crawl" -> "텍스트 수집";
+            case "screenshot" -> "스크린샷";
+            case "attach-capture" -> "결과 저장";
+            case "timeout" -> "시간 초과";
+            case "connection" -> "HTTP 연결";
+            case "session" -> "세션/스트림";
+            case "url-failed" -> "크롤 실패";
+            default -> stage;
+        };
     }
 
     private static final class CrawlState {
