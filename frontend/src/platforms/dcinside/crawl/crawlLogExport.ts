@@ -3,9 +3,9 @@ import {
   CRAWL_LOG_HEADER_FILL,
   EXCEL_HEADER_FONT,
   sanitizeExcelText,
-} from '../../shared/lib/excelUtils';
-import { formatLogDuration } from '../../shared/lib/formatDuration';
-import { getOrCreateSubdirectory, tryReadFileFromDirectory, writeArrayBufferToDirectory } from '../../shared/lib/localFileStorage';
+} from '../../../shared/lib/excelUtils';
+import { formatLogDuration } from '../../../shared/lib/formatDuration';
+import { getOrCreateSubdirectory, tryReadFileFromDirectory, writeArrayBufferToDirectory } from '../../../shared/lib/localFileStorage';
 import type { CrawlFailureRecord, CrawlLogEntry, UrlTiming } from './types';
 
 export const CRAWL_LOG_DIR = 'log';

@@ -1,6 +1,6 @@
-package com.evidence.exception;
+package com.evidence.dcinside.exception;
 
-import com.evidence.util.StepTimings;
+import com.evidence.dcinside.util.StepTimings;
 
 public class StageTimedException extends Exception {
 

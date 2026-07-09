@@ -1,4 +1,4 @@
-import type { DcinsidePostData } from '../../../platforms/dcinside/types';
+import type { DcinsidePostData } from '../../types';
 
 interface ResultsSectionProps {
   savedResults: DcinsidePostData[];

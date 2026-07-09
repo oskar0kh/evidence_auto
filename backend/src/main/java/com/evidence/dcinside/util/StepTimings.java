@@ -1,4 +1,4 @@
-package com.evidence.util;
+package com.evidence.dcinside.util;
 
 import java.util.LinkedHashMap;
 import java.util.Map;

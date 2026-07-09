@@ -1,4 +1,4 @@
-import { formatElapsedForUi } from '../../../shared/lib/formatDuration';
+import { formatElapsedForUi } from '../../../../shared/lib/formatDuration';
 import {
   type CrawlProgress,
   computeProgressLabel,

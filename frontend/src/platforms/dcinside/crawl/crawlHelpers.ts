@@ -15,7 +15,7 @@ import {
 } from '../export/persistResults';
 import type { CrawlFailureRecord, CrawlHealthEvent, CrawlLogEntry, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
-import type { DcinsidePostData } from '../../platforms/dcinside/types';
+import type { DcinsidePostData } from '../types';
 
 export const STAGE_LABELS: Record<string, string> = {
   search: '검색',

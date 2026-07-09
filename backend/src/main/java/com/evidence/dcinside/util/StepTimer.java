@@ -1,4 +1,4 @@
-package com.evidence.util;
+package com.evidence.dcinside.util;
 
 import org.slf4j.Logger;
 

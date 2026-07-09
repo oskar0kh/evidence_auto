@@ -1,4 +1,4 @@
-package com.evidence.dto;
+package com.evidence.dcinside.dto;
 
 import java.util.Map;
 

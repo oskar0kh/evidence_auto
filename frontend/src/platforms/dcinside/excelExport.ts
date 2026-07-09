@@ -9,7 +9,7 @@ import {
   extractSerialFromCaptureFilename,
   getCaptureFilename,
   toCaptureHyperlink,
-} from '../../features/export/pathUtils';
+} from './export/pathUtils';
 import type { DcinsidePostData } from './types';
 
 const SHEET_NAME = '범죄일람표';

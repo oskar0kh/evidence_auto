@@ -1,4 +1,4 @@
-package com.evidence.dto;
+package com.evidence.dcinside.dto;
 
 public record CaptureImage(
         String filename,

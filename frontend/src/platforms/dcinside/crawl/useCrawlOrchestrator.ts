@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { useEffect, useRef, useState } from 'react';
-import { crawlDcinsideStream, lookupDcinsideGalleries, searchCrawlDcinsideStream } from '../../platforms/dcinside/api';
+import { crawlDcinsideStream, lookupDcinsideGalleries, searchCrawlDcinsideStream } from '../api';
 import { filterUrlsByGalleryId } from '../search/searchUtils';
 import {
   finalizeCrawlPersistSession,
@@ -26,11 +26,11 @@ import {
   saveCrawlLog,
 } from './crawlHelpers';
 import { buildExtraStreamFailures, mergeCrawlFailures } from './crawlLogExport';
-import { isAbortError } from '../../shared/lib/abort';
-import { isNativeFolderPickerSupported, pickNativeDirectory } from '../../shared/lib/nativeFolderPicker';
+import { isAbortError } from '../../../shared/lib/abort';
+import { isNativeFolderPickerSupported, pickNativeDirectory } from '../../../shared/lib/nativeFolderPicker';
 import type { CrawlFailureRecord, CrawlHealthEvent, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
-import type { DcinsidePostData } from '../../platforms/dcinside/types';
+import type { DcinsidePostData } from '../types';
 
 function resolveCrawlError(e: unknown): string {
   if (axios.isAxiosError(e) && e.response?.status === 500) {

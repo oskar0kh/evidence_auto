@@ -1,6 +1,6 @@
-import type { DcinsidePostData } from '../../platforms/dcinside/types';
-import { getCaptureFilename } from '../../features/export/pathUtils';
-import { writeBlobToDirectory } from '../../shared/lib/localFileStorage';
+import type { DcinsidePostData } from '../types';
+import { getCaptureFilename } from '../export/pathUtils';
+import { writeBlobToDirectory } from '../../../shared/lib/localFileStorage';
 
 function base64ToBlob(base64: string): Blob {
   const binary = atob(base64);

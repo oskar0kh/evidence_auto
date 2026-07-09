@@ -2,11 +2,11 @@ package com.evidence.dcinside.service;
 
 import com.evidence.dcinside.service.screenshot.ChromeDriverFactory;
 import com.evidence.dcinside.service.screenshot.ImageStitcher;
-import com.evidence.dto.CaptureImage;
-import com.evidence.dto.TimedResult;
-import com.evidence.exception.StageTimedException;
-import com.evidence.util.StepTimer;
-import com.evidence.util.StepTimings;
+import com.evidence.dcinside.dto.CaptureImage;
+import com.evidence.dcinside.dto.TimedResult;
+import com.evidence.dcinside.exception.StageTimedException;
+import com.evidence.dcinside.util.StepTimer;
+import com.evidence.dcinside.util.StepTimings;
 import com.evidence.dcinside.fetch.FetchedPage;
 import com.evidence.dcinside.fetch.FetchPhase;
 import com.evidence.dcinside.http.CrawlThrottle;

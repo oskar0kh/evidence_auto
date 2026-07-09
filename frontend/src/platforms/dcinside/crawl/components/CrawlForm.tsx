@@ -1,10 +1,10 @@
-import DateRangeInput from '../../../shared/ui/DateRangeInput';
-import { formatElapsedForUi } from '../../../shared/lib/formatDuration';
+import DateRangeInput from '../../../../shared/ui/DateRangeInput';
+import { formatElapsedForUi } from '../../../../shared/lib/formatDuration';
 import {
   formatGalleryLabel,
   formatGalleryTypeLabel,
 } from '../crawlHelpers';
-import type { GalleryCandidate } from '../../../features/search/types';
+import type { GalleryCandidate } from '../../search/types';
 
 interface CrawlFormProps {
   urlInput: string;

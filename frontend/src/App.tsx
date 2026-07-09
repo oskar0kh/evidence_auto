@@ -1,8 +1,8 @@
-import CrawlForm from './features/crawl/components/CrawlForm';
-import CrawlProgressPanel from './features/crawl/components/CrawlProgressPanel';
-import ErrorSection from './features/crawl/components/ErrorSection';
-import ResultsSection from './features/crawl/components/ResultsSection';
-import { useCrawlOrchestrator } from './features/crawl/useCrawlOrchestrator';
+import CrawlForm from './platforms/dcinside/crawl/components/CrawlForm';
+import CrawlProgressPanel from './platforms/dcinside/crawl/components/CrawlProgressPanel';
+import ErrorSection from './platforms/dcinside/crawl/components/ErrorSection';
+import ResultsSection from './platforms/dcinside/crawl/components/ResultsSection';
+import { useCrawlOrchestrator } from './platforms/dcinside/crawl/useCrawlOrchestrator';
 import './app/App.css';
 
 export default function App() {

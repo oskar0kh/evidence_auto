@@ -5,14 +5,14 @@ import {
   getOrCreateSubdirectory,
   writeArrayBufferToDirectory,
   writeBlobToDirectory,
-} from '../../shared/lib/localFileStorage';
+} from '../../../shared/lib/localFileStorage';
 import {
   addPostRowToWorkbook,
   createCrimeListWorkbook,
   serializeCrimeListWorkbook,
-} from '../../platforms/dcinside/excelExport';
+} from '../excelExport';
 import { EXCEL_FLUSH_INTERVAL, EXCEL_SHARD_ROW_LIMIT } from '../crawl/constants';
-import type { DcinsidePostData } from '../../platforms/dcinside/types';
+import type { DcinsidePostData } from '../types';
 import {
   buildExcelFilename,
   buildResultFolderName,

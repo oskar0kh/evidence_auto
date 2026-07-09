@@ -1,9 +1,9 @@
 import axios from 'axios';
 import { parseSseChunk } from '../../shared/lib/sse';
 import { isAbortError } from '../../shared/lib/abort';
-import type { CrawlHealthEvent, CrawlProgressEvent, CrawlStreamResult, UrlTiming } from '../../features/crawl/types';
+import type { CrawlHealthEvent, CrawlProgressEvent, CrawlStreamResult, UrlTiming } from './crawl/types';
 import type { DcinsidePostData } from './types';
-import type { GalleryLookupResponse, SearchOptions } from '../../features/search/types';
+import type { GalleryLookupResponse, SearchOptions } from './search/types';
 
 const searchApi = axios.create({
   baseURL: '/api',
