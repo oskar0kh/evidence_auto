@@ -15,10 +15,6 @@ import {
   countUrlBudgetTimeouts,
   createCrawlSessionMetrics,
   formatCrawlSessionMetricsForLog,
-  mergeOperationEvents,
-  observeCrawlHealth,
-  observeCrawlProgress,
-  observeUrlTiming,
   type CrawlSessionMetrics,
 } from './crawlSessionMetrics';
 import {
