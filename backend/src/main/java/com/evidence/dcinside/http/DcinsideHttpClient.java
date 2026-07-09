@@ -1,5 +1,6 @@
 package com.evidence.dcinside.http;
 
+import com.evidence.dcinside.CrawlDeadline;
 import com.evidence.dcinside.DcinsideConstants;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -18,6 +19,7 @@ import java.time.Duration;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 
 @Service
@@ -27,19 +29,26 @@ public class DcinsideHttpClient {
 
     private final CookieManager cookieManager = new CookieManager(null, CookiePolicy.ACCEPT_ALL);
     private final HttpClient httpClient;
+    private final CrawlThrottle crawlThrottle;
     private final int maxAttempts;
     private final long backoffBaseMs;
+    private final int connectionFailureThreshold;
+    private int consecutiveConnectionFailures;
 
     public DcinsideHttpClient(
+            CrawlThrottle crawlThrottle,
             @Value("${evidence.crawl.retry-max-attempts:3}") int maxAttempts,
-            @Value("${evidence.crawl.retry-backoff-base-ms:1000}") long backoffBaseMs
+            @Value("${evidence.crawl.retry-backoff-base-ms:1000}") long backoffBaseMs,
+            @Value("${evidence.crawl.connection-failure-threshold:3}") int connectionFailureThreshold
     ) {
+        this.crawlThrottle = crawlThrottle;
         this.maxAttempts = Math.max(1, maxAttempts);
         this.backoffBaseMs = Math.max(0, backoffBaseMs);
+        this.connectionFailureThreshold = Math.max(1, connectionFailureThreshold);
         this.httpClient = HttpClient.newBuilder()
                 .cookieHandler(cookieManager)
                 .followRedirects(HttpClient.Redirect.NORMAL)
-                .connectTimeout(Duration.ofSeconds(15))
+                .connectTimeout(Duration.ofSeconds(10))
                 .build();
     }
 
@@ -52,19 +61,30 @@ public class DcinsideHttpClient {
     }
 
     public HttpResponse<String> get(String url, String referer, String fetchDest) throws Exception {
-        return get(url, referer, fetchDest, true);
+        return get(url, referer, fetchDest, true, CrawlDeadline.disabled());
     }
 
     public HttpResponse<String> get(String url, String referer, String fetchDest, boolean resilient) throws Exception {
+        return get(url, referer, fetchDest, resilient, CrawlDeadline.disabled());
+    }
+
+    public HttpResponse<String> get(
+            String url,
+            String referer,
+            String fetchDest,
+            boolean resilient,
+            CrawlDeadline deadline
+    ) throws Exception {
         return executeWithRetry(
                 request -> httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)),
                 builder -> {
                     builder.uri(URI.create(url))
-                            .timeout(Duration.ofSeconds(30))
+                            .timeout(Duration.ofSeconds(20))
                             .GET();
                     applyBrowserHeaders(builder, referer, fetchDest);
                 },
-                resilient ? maxAttempts : 1
+                resilient ? maxAttempts : 1,
+                deadline
         );
     }
 
@@ -73,11 +93,21 @@ public class DcinsideHttpClient {
     }
 
     public HttpResponse<String> postForm(String url, String formBody, String referer, boolean resilient) throws Exception {
+        return postForm(url, formBody, referer, resilient, CrawlDeadline.disabled());
+    }
+
+    public HttpResponse<String> postForm(
+            String url,
+            String formBody,
+            String referer,
+            boolean resilient,
+            CrawlDeadline deadline
+    ) throws Exception {
         return executeWithRetry(
                 request -> httpClient.send(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)),
                 builder -> {
                     builder.uri(URI.create(url))
-                            .timeout(Duration.ofSeconds(30))
+                            .timeout(Duration.ofSeconds(20))
                             .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
                             .POST(HttpRequest.BodyPublishers.ofString(formBody));
                     applyBrowserHeaders(builder, referer, "empty");
@@ -85,7 +115,8 @@ public class DcinsideHttpClient {
                     builder.header("X-Requested-With", "XMLHttpRequest");
                     builder.header("Accept", "application/json, text/javascript, */*; q=0.01");
                 },
-                resilient ? maxAttempts : 1
+                resilient ? maxAttempts : 1,
+                deadline
         );
     }
 
@@ -100,6 +131,10 @@ public class DcinsideHttpClient {
 
     public void resetCookies() {
         cookieManager.getCookieStore().removeAll();
+    }
+
+    public void resetConnectionState() {
+        consecutiveConnectionFailures = 0;
     }
 
     public void importCookies(Map<String, String> cookies, String domain) {
@@ -118,11 +153,13 @@ public class DcinsideHttpClient {
     private HttpResponse<String> executeWithRetry(
             ThrowingFunction<HttpRequest, HttpResponse<String>> sender,
             Consumer<HttpRequest.Builder> requestConfigurer,
-            int attempts
+            int attempts,
+            CrawlDeadline deadline
     ) throws Exception {
         int effectiveAttempts = Math.max(1, attempts);
         Exception lastError = null;
         for (int attempt = 1; attempt <= effectiveAttempts; attempt++) {
+            deadline.check();
             try {
                 HttpRequest.Builder builder = HttpRequest.newBuilder();
                 requestConfigurer.accept(builder);
@@ -136,23 +173,25 @@ public class DcinsideHttpClient {
                             effectiveAttempts,
                             response.statusCode()
                     );
-                    sleepBackoff(attempt);
+                    sleepBackoff(attempt, deadline);
                     continue;
                 }
                 if (signal != null) {
                     throw new IllegalStateException(buildFailureMessage(response.statusCode(), signal));
                 }
+                recordConnectionSuccess();
                 return response;
             } catch (IllegalStateException e) {
                 lastError = e;
                 if (attempt < effectiveAttempts) {
-                    sleepBackoff(attempt);
+                    sleepBackoff(attempt, deadline);
                 }
             } catch (Exception e) {
                 lastError = e;
+                handleConnectionFailure(e);
                 if (attempt < effectiveAttempts) {
                     log.warn("HTTP request failed on attempt {}/{}: {}", attempt, effectiveAttempts, e.getMessage());
-                    sleepBackoff(attempt);
+                    sleepBackoff(attempt, deadline);
                 }
             }
         }
@@ -162,13 +201,38 @@ public class DcinsideHttpClient {
         throw new IllegalStateException("HTTP 요청에 실패했습니다.");
     }
 
-    private void sleepBackoff(int attempt) throws InterruptedException {
+    private void handleConnectionFailure(Exception error) throws InterruptedException, TimeoutException {
+        if (!ConnectionFailureDetector.isConnectionFailure(error)) {
+            return;
+        }
+        consecutiveConnectionFailures++;
+        if (consecutiveConnectionFailures < connectionFailureThreshold) {
+            return;
+        }
+        log.warn(
+                "연속 HTTP 연결 실패 {}회 — 쿠키 초기화 후 쿨다운 적용",
+                consecutiveConnectionFailures
+        );
+        resetCookies();
+        consecutiveConnectionFailures = 0;
+        crawlThrottle.sleepConnectionCooldown();
+    }
+
+    private void recordConnectionSuccess() {
+        consecutiveConnectionFailures = 0;
+    }
+
+    private void sleepBackoff(int attempt, CrawlDeadline deadline) throws InterruptedException, TimeoutException {
         if (backoffBaseMs <= 0) {
             return;
         }
         long delay = backoffBaseMs * (1L << Math.min(attempt - 1, 4));
         int jitter = ThreadLocalRandom.current().nextInt(0, (int) Math.max(1, delay / 4));
-        Thread.sleep(delay + jitter);
+        long sleepMs = deadline.cappedSleepMs(delay + jitter);
+        if (sleepMs <= 0) {
+            throw new TimeoutException("URL 처리 시간 예산을 초과했습니다.");
+        }
+        Thread.sleep(sleepMs);
     }
 
     private static String buildFailureMessage(int statusCode, BlockSignal signal) {

@@ -1,5 +1,6 @@
 package com.evidence.dcinside.controller;
 
+import com.evidence.dcinside.CrawlDeadline;
 import com.evidence.dcinside.dto.CrawlHealthEvent;
 import com.evidence.dcinside.dto.CrawlRequest;
 import com.evidence.dcinside.dto.DcinsidePostData;
@@ -15,6 +16,7 @@ import com.evidence.dcinside.http.CrawlThrottle;
 import com.evidence.dcinside.http.DcinsideHttpClient;
 import com.evidence.dcinside.service.DcinsideCrawlService;
 import com.evidence.dcinside.service.DcinsideSearchService;
+import com.evidence.dcinside.service.RotatingCaptureSession;
 import com.evidence.dcinside.service.ScreenshotService;
 import com.evidence.dto.CaptureImage;
 import com.evidence.dto.CrawlProgressEvent;
@@ -45,6 +47,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeoutException;
 import java.util.function.Consumer;
 import java.util.function.Function;
 
@@ -61,6 +64,8 @@ public class CrawlController {
     private final CrawlThrottle crawlThrottle;
     private final int urlRetryMaxAttempts;
     private final int urlProtectiveRetryMaxAttempts;
+    private final long urlMaxDurationMs;
+    private final int chromeSessionRotateEveryUrls;
 
     public CrawlController(
             DcinsideCrawlService crawlService,
@@ -70,7 +75,9 @@ public class CrawlController {
             DcinsideHttpClient httpClient,
             CrawlThrottle crawlThrottle,
             @Value("${evidence.crawl.url-retry-max-attempts:2}") int urlRetryMaxAttempts,
-            @Value("${evidence.crawl.url-protective-retry-max-attempts:2}") int urlProtectiveRetryMaxAttempts
+            @Value("${evidence.crawl.url-protective-retry-max-attempts:2}") int urlProtectiveRetryMaxAttempts,
+            @Value("${evidence.crawl.url-max-duration-ms:180000}") long urlMaxDurationMs,
+            @Value("${evidence.crawl.chrome-session-rotate-every-urls:25}") int chromeSessionRotateEveryUrls
     ) {
         this.crawlService = crawlService;
         this.searchService = searchService;
@@ -80,6 +87,8 @@ public class CrawlController {
         this.crawlThrottle = crawlThrottle;
         this.urlRetryMaxAttempts = Math.max(1, urlRetryMaxAttempts);
         this.urlProtectiveRetryMaxAttempts = Math.max(1, urlProtectiveRetryMaxAttempts);
+        this.urlMaxDurationMs = Math.max(0, urlMaxDurationMs);
+        this.chromeSessionRotateEveryUrls = Math.max(0, chromeSessionRotateEveryUrls);
     }
 
     @PostMapping(value = "/dcinside/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -137,11 +146,11 @@ public class CrawlController {
 
         CrawlState state = new CrawlState(validUrls.size(), request.startSerial());
         CrawlHealthTracker health = fetchEscalator.newHealthTracker();
-        httpClient.resetCookies();
+        prepareCrawlEnvironment();
 
-        try (ScreenshotService.CaptureSession captureSession = screenshotService.openCaptureSession()) {
+        try (RotatingCaptureSession captureSession = openRotatingSession()) {
             for (String trimmed : validUrls) {
-                sleepBeforeRequestQuietly(health);
+                sleepBeforeRequestQuietly(health, state.completed);
                 processSingleUrl(trimmed, state, captureSession, callbacks, health);
             }
         } catch (Exception e) {
@@ -165,16 +174,16 @@ public class CrawlController {
         Set<String> seen = new LinkedHashSet<>();
         CrawlState state = new CrawlState(0, request.startSerial());
         CrawlHealthTracker health = fetchEscalator.newHealthTracker();
-        httpClient.resetCookies();
+        prepareCrawlEnvironment();
 
-        try (ScreenshotService.CaptureSession captureSession = screenshotService.openCaptureSession()) {
+        try (RotatingCaptureSession captureSession = openRotatingSession()) {
             searchService.forEachSearchUrl(
                     criteria,
                     seen,
                     pageEvent -> emitSearchProgress(pageEvent, state, callbacks),
                     url -> {
                         state.total = Math.max(state.total, seen.size());
-                        sleepBeforeRequestQuietly(health);
+                        sleepBeforeRequestQuietly(health, state.completed);
                         processSingleUrl(url, state, captureSession, callbacks, health);
                         return true;
                     },
@@ -183,7 +192,8 @@ public class CrawlController {
                         callbacks.urlError().accept(errorEntry(searchUrl, message, "search"));
                         emitHealth(callbacks, health, message);
                     },
-                    health
+                    health,
+                    () -> state.completed
             );
         } catch (Exception e) {
             throw new IllegalStateException("검색 크롤 세션 오류: " + e.getMessage(), e);
@@ -215,7 +225,7 @@ public class CrawlController {
     private void processSingleUrl(
             String trimmed,
             CrawlState state,
-            ScreenshotService.CaptureSession captureSession,
+            RotatingCaptureSession captureSession,
             CrawlCallbacks callbacks,
             CrawlHealthTracker health
     ) {
@@ -223,99 +233,116 @@ public class CrawlController {
                 state.completed, state.total, trimmed, "text-crawl", state.successCount, state.failCount
         ));
 
+        CrawlDeadline deadline = CrawlDeadline.fromNow(urlMaxDurationMs);
         boolean wasProtective = health.isProtectiveMode();
         Exception lastFailure = null;
         List<StepTimings> lastPartialTimings = new ArrayList<>();
         StepTimer lastTimer = new StepTimer(log, "crawl-url " + trimmed);
 
-        for (int attempt = 1; attempt <= urlRetryMaxAttempts; attempt++) {
-            if (attempt > 1) {
-                sleepBeforeRequestQuietly(health);
-                emitHealth(callbacks, health, "Fast Mode 재시도 " + attempt + "/" + urlRetryMaxAttempts);
-            }
-            try {
-                tryProcessUrlOnce(trimmed, state, captureSession, callbacks, health);
-                health.recordSuccess(health.currentPhase());
-                if (wasProtective && !health.isProtectiveMode()) {
-                    emitHealth(callbacks, health, "보호 모드 해제 → Fast Mode 복귀");
-                } else {
-                    emitHealth(callbacks, health, null);
+        try {
+            for (int attempt = 1; attempt <= urlRetryMaxAttempts; attempt++) {
+                if (isUrlBudgetExceeded(deadline)) {
+                    lastFailure = new TimeoutException("URL 처리 시간 예산을 초과했습니다.");
+                    break;
                 }
-                return;
-            } catch (StageTimedException e) {
-                lastFailure = e;
-                lastPartialTimings = new ArrayList<>(List.of(e.timings()));
-                lastTimer = new StepTimer(log, "crawl-url " + trimmed);
-                log.warn("Fast crawl attempt {}/{} failed for {} at {}: {}",
-                        attempt, urlRetryMaxAttempts, trimmed, e.stage(), e.getMessage());
-            } catch (Exception e) {
-                lastFailure = e;
-                lastPartialTimings = new ArrayList<>();
-                lastTimer = new StepTimer(log, "crawl-url " + trimmed);
-                log.warn("Fast crawl attempt {}/{} failed for {}: {}",
-                        attempt, urlRetryMaxAttempts, trimmed, e.getMessage());
-            }
-        }
-
-        health.activateProtectiveMode();
-        emitHealth(callbacks, health, "Fast Mode 실패 → 보호 모드로 재시도");
-
-        for (int attempt = 1; attempt <= urlProtectiveRetryMaxAttempts; attempt++) {
-            sleepBeforeRequestQuietly(health);
-            emitHealth(callbacks, health, "보호 모드 재시도 " + attempt + "/" + urlProtectiveRetryMaxAttempts);
-            try {
-                tryProcessUrlOnce(trimmed, state, captureSession, callbacks, health);
-                health.recordSuccess(health.currentPhase());
-                if (!health.isProtectiveMode()) {
-                    emitHealth(callbacks, health, "보호 모드 해제 → Fast Mode 복귀");
-                } else {
-                    emitHealth(callbacks, health, null);
+                if (attempt > 1) {
+                    sleepBeforeRequestQuietly(health, state.completed);
+                    emitHealth(callbacks, health, "Fast Mode 재시도 " + attempt + "/" + urlRetryMaxAttempts);
                 }
-                return;
-            } catch (StageTimedException e) {
-                lastFailure = e;
-                lastPartialTimings = new ArrayList<>(List.of(e.timings()));
-                lastTimer = new StepTimer(log, "crawl-url " + trimmed);
-                log.warn("Protective crawl attempt {}/{} failed for {} at {}: {}",
-                        attempt, urlProtectiveRetryMaxAttempts, trimmed, e.stage(), e.getMessage());
-            } catch (Exception e) {
-                lastFailure = e;
-                lastPartialTimings = new ArrayList<>();
-                lastTimer = new StepTimer(log, "crawl-url " + trimmed);
-                log.warn("Protective crawl attempt {}/{} failed for {}: {}",
-                        attempt, urlProtectiveRetryMaxAttempts, trimmed, e.getMessage());
+                try {
+                    tryProcessUrlOnce(trimmed, state, captureSession, callbacks, health, deadline);
+                    health.recordSuccess(health.currentPhase());
+                    if (wasProtective && !health.isProtectiveMode()) {
+                        emitHealth(callbacks, health, "보호 모드 해제 → Fast Mode 복귀");
+                    } else {
+                        emitHealth(callbacks, health, null);
+                    }
+                    return;
+                } catch (StageTimedException e) {
+                    lastFailure = e;
+                    lastPartialTimings = new ArrayList<>(List.of(e.timings()));
+                    lastTimer = new StepTimer(log, "crawl-url " + trimmed);
+                    log.warn("Fast crawl attempt {}/{} failed for {} at {}: {}",
+                            attempt, urlRetryMaxAttempts, trimmed, e.stage(), e.getMessage());
+                } catch (Exception e) {
+                    lastFailure = e;
+                    lastPartialTimings = new ArrayList<>();
+                    lastTimer = new StepTimer(log, "crawl-url " + trimmed);
+                    log.warn("Fast crawl attempt {}/{} failed for {}: {}",
+                            attempt, urlRetryMaxAttempts, trimmed, e.getMessage());
+                }
             }
-        }
 
-        health.recordFailure(BlockSignal.HTTP_ERROR, health.currentPhase());
-        Map<String, String> error = lastFailure instanceof StageTimedException stageTimed
-                ? errorEntry(trimmed, stageTimed)
-                : errorEntry(trimmed, lastFailure);
-        UrlTiming failedTiming = buildFailedTiming(trimmed, lastPartialTimings, lastTimer);
-        callbacks.urlError().accept(error);
-        callbacks.urlTiming().accept(failedTiming);
-        emitHealth(callbacks, health, lastFailure != null ? lastFailure.getMessage() : "크롤 실패");
-        state.failCount++;
-        state.completed++;
-        callbacks.progress().accept(new CrawlProgressEvent(
-                state.completed, state.total, trimmed, "url-failed", state.successCount, state.failCount
-        ));
+            if (!isUrlBudgetExceeded(deadline)) {
+                health.activateProtectiveMode();
+                emitHealth(callbacks, health, "Fast Mode 실패 → 보호 모드로 재시도");
+
+                for (int attempt = 1; attempt <= urlProtectiveRetryMaxAttempts; attempt++) {
+                    if (isUrlBudgetExceeded(deadline)) {
+                        lastFailure = new TimeoutException("URL 처리 시간 예산을 초과했습니다.");
+                        break;
+                    }
+                    sleepBeforeRequestQuietly(health, state.completed);
+                    emitHealth(callbacks, health, "보호 모드 재시도 " + attempt + "/" + urlProtectiveRetryMaxAttempts);
+                    try {
+                        tryProcessUrlOnce(trimmed, state, captureSession, callbacks, health, deadline);
+                        health.recordSuccess(health.currentPhase());
+                        if (!health.isProtectiveMode()) {
+                            emitHealth(callbacks, health, "보호 모드 해제 → Fast Mode 복귀");
+                        } else {
+                            emitHealth(callbacks, health, null);
+                        }
+                        return;
+                    } catch (StageTimedException e) {
+                        lastFailure = e;
+                        lastPartialTimings = new ArrayList<>(List.of(e.timings()));
+                        lastTimer = new StepTimer(log, "crawl-url " + trimmed);
+                        log.warn("Protective crawl attempt {}/{} failed for {} at {}: {}",
+                                attempt, urlProtectiveRetryMaxAttempts, trimmed, e.stage(), e.getMessage());
+                    } catch (Exception e) {
+                        lastFailure = e;
+                        lastPartialTimings = new ArrayList<>();
+                        lastTimer = new StepTimer(log, "crawl-url " + trimmed);
+                        log.warn("Protective crawl attempt {}/{} failed for {}: {}",
+                                attempt, urlProtectiveRetryMaxAttempts, trimmed, e.getMessage());
+                    }
+                }
+            }
+
+            health.recordFailure(BlockSignal.HTTP_ERROR, health.currentPhase());
+            Map<String, String> error = lastFailure instanceof StageTimedException stageTimed
+                    ? errorEntry(trimmed, stageTimed)
+                    : errorEntry(trimmed, lastFailure);
+            UrlTiming failedTiming = buildFailedTiming(trimmed, lastPartialTimings, lastTimer);
+            callbacks.urlError().accept(error);
+            callbacks.urlTiming().accept(failedTiming);
+            emitHealth(callbacks, health, lastFailure != null ? lastFailure.getMessage() : "크롤 실패");
+            state.failCount++;
+            state.completed++;
+            callbacks.progress().accept(new CrawlProgressEvent(
+                    state.completed, state.total, trimmed, "url-failed", state.successCount, state.failCount
+            ));
+        } finally {
+            captureSession.afterUrlProcessed();
+        }
     }
 
     private void tryProcessUrlOnce(
             String trimmed,
             CrawlState state,
-            ScreenshotService.CaptureSession captureSession,
+            RotatingCaptureSession captureSession,
             CrawlCallbacks callbacks,
-            CrawlHealthTracker health
+            CrawlHealthTracker health,
+            CrawlDeadline deadline
     ) throws Exception {
         StepTimer timer = new StepTimer(log, "crawl-url " + trimmed);
         List<StepTimings> partialTimings = new ArrayList<>();
+        ScreenshotService.CaptureSession browserSession = captureSession.current();
 
-        captureSession.setRelaxBlockTracking(health.shouldRelaxBlockTracking());
-        FetchedPage fetchedPage = fetchEscalator.fetchPostPage(trimmed, health, captureSession);
+        browserSession.setRelaxBlockTracking(health.shouldRelaxBlockTracking());
+        FetchedPage fetchedPage = fetchEscalator.fetchPostPage(trimmed, health, browserSession, deadline);
 
-        TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed, fetchedPage, health);
+        TimedResult<DcinsidePostData> crawled = crawlService.crawl(trimmed, fetchedPage, health, deadline);
         partialTimings.add(crawled.timings());
         timer.step("text-crawl");
 
@@ -326,7 +353,7 @@ public class CrawlController {
         int excelRowNumber = state.nextSerial++;
         String postNo = ScreenshotService.extractPostNoFromUrl(trimmed);
         boolean skipNavigate = fetchedPage.phase() == FetchPhase.BROWSER;
-        TimedResult<CaptureImage> capture = captureSession.captureFullPage(
+        TimedResult<CaptureImage> capture = browserSession.captureFullPage(
                 trimmed,
                 excelRowNumber,
                 postNo,
@@ -359,13 +386,26 @@ public class CrawlController {
         ));
     }
 
+    private void prepareCrawlEnvironment() {
+        httpClient.resetCookies();
+        httpClient.resetConnectionState();
+    }
+
+    private RotatingCaptureSession openRotatingSession() {
+        return new RotatingCaptureSession(screenshotService, chromeSessionRotateEveryUrls);
+    }
+
+    private static boolean isUrlBudgetExceeded(CrawlDeadline deadline) {
+        return deadline.isEnabled() && deadline.isExpired();
+    }
+
     private void emitHealth(CrawlCallbacks callbacks, CrawlHealthTracker health, String message) {
         callbacks.health().accept(health.snapshot(message));
     }
 
-    private void sleepBeforeRequestQuietly(CrawlHealthTracker health) {
+    private void sleepBeforeRequestQuietly(CrawlHealthTracker health, int processedPostUrlCount) {
         try {
-            crawlThrottle.sleepBeforeRequest(health.isProtectiveMode());
+            crawlThrottle.sleepBeforeRequest(health.isProtectiveMode(), processedPostUrlCount);
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new IllegalStateException("크롤링이 중단되었습니다.", e);

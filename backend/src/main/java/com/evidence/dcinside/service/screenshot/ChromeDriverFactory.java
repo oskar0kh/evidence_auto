@@ -19,7 +19,11 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -80,6 +84,10 @@ public final class ChromeDriverFactory {
     }
 
     public static ChromeDriver createDriver(String chromeBinary) {
+        return createDriver(chromeBinary, 30);
+    }
+
+    public static ChromeDriver createDriver(String chromeBinary, int startTimeoutSeconds) {
         ChromeOptions options = new ChromeOptions();
         options.setBinary(chromeBinary);
         options.setPageLoadStrategy(PageLoadStrategy.NONE);
@@ -107,7 +115,20 @@ public final class ChromeDriverFactory {
         ChromeDriverService service = new ChromeDriverService.Builder()
                 .withEnvironment(Map.of("LANG", "ko_KR.UTF-8", "LC_ALL", "ko_KR.UTF-8"))
                 .build();
-        return new ChromeDriver(service, options);
+
+        int timeout = Math.max(5, startTimeoutSeconds);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        Future<ChromeDriver> future = executor.submit(() -> new ChromeDriver(service, options));
+        try {
+            return future.get(timeout, TimeUnit.SECONDS);
+        } catch (TimeoutException e) {
+            future.cancel(true);
+            throw new IllegalStateException("ChromeDriver 시작 시간 초과 (" + timeout + "초)", e);
+        } catch (Exception e) {
+            throw new IllegalStateException("ChromeDriver 시작 실패: " + e.getMessage(), e);
+        } finally {
+            executor.shutdownNow();
+        }
     }
 
     public static void quitDriver(WebDriver driver) {
@@ -146,7 +167,8 @@ public final class ChromeDriverFactory {
                 || lower.contains("not reachable")
                 || lower.contains("disconnected")
                 || lower.contains("no such window")
-                || lower.contains("chrome not reachable");
+                || lower.contains("chrome not reachable")
+                || lower.contains("could not start a new session");
     }
 
     public static void warnIfKoreanFontsMissing() {

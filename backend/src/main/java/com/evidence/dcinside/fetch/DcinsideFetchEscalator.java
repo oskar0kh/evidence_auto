@@ -1,5 +1,6 @@
 package com.evidence.dcinside.fetch;
 
+import com.evidence.dcinside.CrawlDeadline;
 import com.evidence.dcinside.http.BlockSignal;
 import com.evidence.dcinside.http.DcinsideHttpClient;
 import com.evidence.dcinside.service.ScreenshotService;
@@ -13,6 +14,7 @@ import org.springframework.stereotype.Service;
 import java.net.http.HttpResponse;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.TimeoutException;
 
 @Service
 public class DcinsideFetchEscalator {
@@ -52,9 +54,19 @@ public class DcinsideFetchEscalator {
             CrawlHealthTracker health,
             ScreenshotService.CaptureSession captureSession
     ) throws Exception {
+        return fetchPostPage(url, health, captureSession, CrawlDeadline.disabled());
+    }
+
+    public FetchedPage fetchPostPage(
+            String url,
+            CrawlHealthTracker health,
+            ScreenshotService.CaptureSession captureSession,
+            CrawlDeadline deadline
+    ) throws Exception {
         if (!health.isProtectiveMode()) {
             try {
-                FetchedPage page = fetchHttp(url, url, FetchPhase.HTTP_DESKTOP, false);
+                deadline.check();
+                FetchedPage page = fetchHttp(url, url, FetchPhase.HTTP_DESKTOP, false, deadline);
                 BlockSignal signal = validatePostPage(page.html());
                 if (signal == null) {
                     health.recordSuccess(FetchPhase.HTTP_DESKTOP);
@@ -69,20 +81,22 @@ public class DcinsideFetchEscalator {
             log.info("Switching to protective mode for {}", url);
         }
 
-        return fetchPostPageProtective(url, health, captureSession);
+        return fetchPostPageProtective(url, health, captureSession, deadline);
     }
 
     private FetchedPage fetchPostPageProtective(
             String url,
             CrawlHealthTracker health,
-            ScreenshotService.CaptureSession captureSession
+            ScreenshotService.CaptureSession captureSession,
+            CrawlDeadline deadline
     ) throws Exception {
         List<FetchPhase> phases = resolvePhases(health);
         Exception lastError = null;
 
         for (FetchPhase phase : phases) {
+            deadline.check();
             try {
-                FetchedPage page = fetchWithPhase(url, phase, captureSession, health, true);
+                FetchedPage page = fetchWithPhase(url, phase, captureSession, health, true, deadline);
                 BlockSignal signal = validatePostPage(page.html());
                 if (signal != null) {
                     health.recordFailure(signal, phase);
@@ -92,6 +106,8 @@ public class DcinsideFetchEscalator {
                 }
                 health.recordSuccess(phase);
                 return page;
+            } catch (TimeoutException e) {
+                throw e;
             } catch (Exception e) {
                 health.recordFailure(BlockSignal.HTTP_ERROR, phase);
                 lastError = e;
@@ -106,13 +122,18 @@ public class DcinsideFetchEscalator {
     }
 
     public Document fetchSearchDocument(String url, CrawlHealthTracker health) {
+        return fetchSearchDocument(url, health, CrawlDeadline.disabled());
+    }
+
+    public Document fetchSearchDocument(String url, CrawlHealthTracker health, CrawlDeadline deadline) {
         boolean resilient = health != null && health.isProtectiveMode();
         try {
             HttpResponse<String> response = httpClient.get(
                     url,
                     "https://search.dcinside.com/",
                     "document",
-                    resilient
+                    resilient,
+                    deadline
             );
             return Jsoup.parse(response.body(), url);
         } catch (Exception e) {
@@ -133,17 +154,24 @@ public class DcinsideFetchEscalator {
             FetchPhase phase,
             ScreenshotService.CaptureSession captureSession,
             CrawlHealthTracker health,
-            boolean resilient
+            boolean resilient,
+            CrawlDeadline deadline
     ) throws Exception {
         return switch (phase) {
-            case HTTP_DESKTOP -> fetchHttp(url, url, FetchPhase.HTTP_DESKTOP, resilient);
-            case HTTP_MOBILE -> fetchHttp(toMobileUrl(url), url, FetchPhase.HTTP_MOBILE, resilient);
+            case HTTP_DESKTOP -> fetchHttp(url, url, FetchPhase.HTTP_DESKTOP, resilient, deadline);
+            case HTTP_MOBILE -> fetchHttp(toMobileUrl(url), url, FetchPhase.HTTP_MOBILE, resilient, deadline);
             case BROWSER -> captureSession.fetchPageContent(url, health.shouldRelaxBlockTracking());
         };
     }
 
-    private FetchedPage fetchHttp(String fetchUrl, String referer, FetchPhase phase, boolean resilient) throws Exception {
-        HttpResponse<String> response = httpClient.get(fetchUrl, referer, "document", resilient);
+    private FetchedPage fetchHttp(
+            String fetchUrl,
+            String referer,
+            FetchPhase phase,
+            boolean resilient,
+            CrawlDeadline deadline
+    ) throws Exception {
+        HttpResponse<String> response = httpClient.get(fetchUrl, referer, "document", resilient, deadline);
         return new FetchedPage(fetchUrl, response.body(), phase, referer);
     }
 

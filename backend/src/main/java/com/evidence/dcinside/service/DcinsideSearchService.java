@@ -12,6 +12,7 @@ import org.jsoup.nodes.Element;
 import org.jsoup.select.Elements;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.net.URLEncoder;
@@ -25,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.function.Consumer;
+import java.util.function.IntSupplier;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -47,13 +49,16 @@ public class DcinsideSearchService {
 
     private final DcinsideFetchEscalator fetchEscalator;
     private final CrawlThrottle crawlThrottle;
+    private final int searchPageRetryMaxAttempts;
 
     public DcinsideSearchService(
             DcinsideFetchEscalator fetchEscalator,
-            CrawlThrottle crawlThrottle
+            CrawlThrottle crawlThrottle,
+            @Value("${evidence.crawl.search-page-retry-max-attempts:2}") int searchPageRetryMaxAttempts
     ) {
         this.fetchEscalator = fetchEscalator;
         this.crawlThrottle = crawlThrottle;
+        this.searchPageRetryMaxAttempts = Math.max(1, searchPageRetryMaxAttempts);
     }
 
     public record SearchResult(
@@ -123,7 +128,7 @@ public class DcinsideSearchService {
     public List<String> searchIntegrated(String query, Integer maxResults) throws Exception {
         Set<String> collected = new LinkedHashSet<>();
         SearchStreamCriteria criteria = new SearchStreamCriteria(query, maxResults, null, null, null);
-        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null, null);
         return new ArrayList<>(collected);
     }
 
@@ -132,7 +137,7 @@ public class DcinsideSearchService {
         validateDateRange(startDate, endDate);
         Set<String> collected = new LinkedHashSet<>();
         SearchStreamCriteria criteria = new SearchStreamCriteria(query, null, startDate, endDate, null);
-        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null, null);
         return new ArrayList<>(collected);
     }
 
@@ -140,7 +145,7 @@ public class DcinsideSearchService {
         String normalizedGalleryId = normalizeGalleryId(galleryId);
         Set<String> collected = new LinkedHashSet<>();
         SearchStreamCriteria criteria = new SearchStreamCriteria(query, maxResults, null, null, normalizedGalleryId);
-        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null, null);
         return filterUrlsByGalleryId(new ArrayList<>(collected), normalizedGalleryId);
     }
 
@@ -156,7 +161,7 @@ public class DcinsideSearchService {
         SearchStreamCriteria criteria = new SearchStreamCriteria(
                 query, null, startDate, endDate, normalizedGalleryId
         );
-        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null);
+        forEachSearchUrl(criteria, collected, page -> { }, url -> true, null, null, null);
         return filterUrlsByGalleryId(new ArrayList<>(collected), normalizedGalleryId);
     }
 
@@ -171,6 +176,18 @@ public class DcinsideSearchService {
             SearchUrlConsumer onUrl,
             SearchPageErrorConsumer onPageError,
             CrawlHealthTracker health
+    ) throws Exception {
+        forEachSearchUrl(criteria, seen, onPage, onUrl, onPageError, health, null);
+    }
+
+    public void forEachSearchUrl(
+            SearchStreamCriteria criteria,
+            Set<String> seen,
+            Consumer<SearchPageEvent> onPage,
+            SearchUrlConsumer onUrl,
+            SearchPageErrorConsumer onPageError,
+            CrawlHealthTracker health,
+            IntSupplier processedPostUrlCount
     ) throws Exception {
         if (criteria.isDateRangeSearch()) {
             validateDateRange(criteria.startDate(), criteria.endDate());
@@ -200,7 +217,7 @@ public class DcinsideSearchService {
                 onPage.accept(new SearchPageEvent(termIdx + 1, terms.size(), term, page, seen.size()));
 
                 String searchUrl = buildSearchUrl(page, encodedQuery, galleryId);
-                Document doc = fetchEscalator.fetchSearchDocument(searchUrl, health);
+                Document doc = fetchSearchDocumentWithRetry(searchUrl, health);
                 if (doc == null) {
                     String message = "검색 페이지를 불러올 수 없습니다: " + searchUrl;
                     log.warn(message);
@@ -255,16 +272,36 @@ public class DcinsideSearchService {
                     if (!dateRange && termCollected >= limit) {
                         break;
                     }
-                    boolean protective = health != null && health.isProtectiveMode();
-                    crawlThrottle.sleepBeforeRequest(protective);
+                    sleepBeforeSearchRequest(health, processedPostUrlCount);
                 }
             }
 
             if (termIdx < terms.size() - 1) {
+                sleepBeforeSearchRequest(health, processedPostUrlCount);
+            }
+        }
+    }
+
+    private void sleepBeforeSearchRequest(CrawlHealthTracker health, IntSupplier processedPostUrlCount)
+            throws InterruptedException {
+        boolean protective = health != null && health.isProtectiveMode();
+        int count = processedPostUrlCount != null ? processedPostUrlCount.getAsInt() : 0;
+        crawlThrottle.sleepBeforeRequest(protective, count);
+    }
+
+    private Document fetchSearchDocumentWithRetry(String searchUrl, CrawlHealthTracker health) throws InterruptedException {
+        Document doc = null;
+        for (int attempt = 1; attempt <= searchPageRetryMaxAttempts; attempt++) {
+            if (attempt > 1) {
                 boolean protective = health != null && health.isProtectiveMode();
                 crawlThrottle.sleepBeforeRequest(protective);
             }
+            doc = fetchEscalator.fetchSearchDocument(searchUrl, health);
+            if (doc != null) {
+                return doc;
+            }
         }
+        return null;
     }
 
     private static void validateDateRange(LocalDate startDate, LocalDate endDate) {

@@ -63,6 +63,7 @@ public class ScreenshotService {
     private final long commentWaitMs;
     private final int pageLoadTimeoutSeconds;
     private final int contentWaitSeconds;
+    private final int driverStartTimeoutSeconds;
     private final boolean blockTracking;
     private final boolean captureAllCommentPages;
     private final CrawlThrottle crawlThrottle;
@@ -76,6 +77,7 @@ public class ScreenshotService {
             @Value("${evidence.screenshot.comment-wait-ms:1500}") long commentWaitMs,
             @Value("${evidence.screenshot.page-load-timeout-seconds:15}") int pageLoadTimeoutSeconds,
             @Value("${evidence.screenshot.content-wait-seconds:45}") int contentWaitSeconds,
+            @Value("${evidence.screenshot.driver-start-timeout-seconds:30}") int driverStartTimeoutSeconds,
             @Value("${evidence.screenshot.block-tracking:true}") boolean blockTracking,
             @Value("${evidence.screenshot.capture-all-comment-pages:true}") boolean captureAllCommentPages,
             CrawlThrottle crawlThrottle
@@ -84,6 +86,7 @@ public class ScreenshotService {
         this.commentWaitMs = commentWaitMs;
         this.pageLoadTimeoutSeconds = pageLoadTimeoutSeconds;
         this.contentWaitSeconds = contentWaitSeconds;
+        this.driverStartTimeoutSeconds = driverStartTimeoutSeconds;
         this.blockTracking = blockTracking;
         this.captureAllCommentPages = captureAllCommentPages;
         this.crawlThrottle = crawlThrottle;
@@ -261,7 +264,7 @@ public class ScreenshotService {
     }
 
     private ChromeDriver createAndConfigureDriver(StepTimer timer, boolean relaxTracking) throws Exception {
-        ChromeDriver chromeDriver = ChromeDriverFactory.createDriver(chromeBinary);
+        ChromeDriver chromeDriver = ChromeDriverFactory.createDriver(chromeBinary, driverStartTimeoutSeconds);
         if (timer != null) {
             timer.step("create-driver");
         }

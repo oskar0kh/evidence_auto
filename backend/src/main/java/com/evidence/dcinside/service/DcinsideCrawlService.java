@@ -1,6 +1,7 @@
 package com.evidence.dcinside.service;
 
 import com.evidence.dcinside.DcinsideConstants;
+import com.evidence.dcinside.CrawlDeadline;
 import com.evidence.dcinside.dto.CommentData;
 import com.evidence.dcinside.dto.DcinsidePostData;
 import com.evidence.dto.CaptureImage;
@@ -61,6 +62,15 @@ public class DcinsideCrawlService {
             FetchedPage fetchedPage,
             com.evidence.dcinside.fetch.CrawlHealthTracker health
     ) throws Exception {
+        return crawl(url, fetchedPage, health, CrawlDeadline.disabled());
+    }
+
+    public TimedResult<DcinsidePostData> crawl(
+            String url,
+            FetchedPage fetchedPage,
+            com.evidence.dcinside.fetch.CrawlHealthTracker health,
+            CrawlDeadline deadline
+    ) throws Exception {
         if (!DcinsideConstants.isPostUrl(url)) {
             throw new IllegalArgumentException("디시인사이드 게시글 URL이 아닙니다.");
         }
@@ -69,7 +79,7 @@ public class DcinsideCrawlService {
         String normalizedUrl = normalizeUrl(url);
         StepTimer timer = new StepTimer(log, "text-crawl " + normalizedUrl);
         try {
-            return new TimedResult<>(crawlInternal(normalizedUrl, fetchedPage, health, timer), timer.finish());
+            return new TimedResult<>(crawlInternal(normalizedUrl, fetchedPage, health, deadline, timer), timer.finish());
         } catch (Exception e) {
             throw new StageTimedException("text-crawl", e, timer.finish());
         }
@@ -79,6 +89,7 @@ public class DcinsideCrawlService {
             String normalizedUrl,
             FetchedPage fetchedPage,
             com.evidence.dcinside.fetch.CrawlHealthTracker health,
+            CrawlDeadline deadline,
             StepTimer timer
     ) throws Exception {
         String html;
@@ -149,7 +160,8 @@ public class DcinsideCrawlService {
                 postNo,
                 esno,
                 galleryType,
-                health
+                health,
+                deadline
         );
         timer.step("fetch-comments (" + comments.size() + " comments)");
         int realCommentCount = countRealComments(comments);
@@ -497,10 +509,11 @@ public class DcinsideCrawlService {
             String postNo,
             String esno,
             String galleryType,
-            com.evidence.dcinside.fetch.CrawlHealthTracker health
+            com.evidence.dcinside.fetch.CrawlHealthTracker health,
+            CrawlDeadline deadline
     ) {
         try {
-            return fetchAllCommentsInternal(referer, galleryId, postNo, esno, galleryType, health);
+            return fetchAllCommentsInternal(referer, galleryId, postNo, esno, galleryType, health, deadline);
         } catch (Exception e) {
             log.warn("댓글 수집 실패 ({}): {}", referer, e.getMessage());
             return List.of();
@@ -513,7 +526,8 @@ public class DcinsideCrawlService {
             String postNo,
             String esno,
             String galleryType,
-            com.evidence.dcinside.fetch.CrawlHealthTracker health
+            com.evidence.dcinside.fetch.CrawlHealthTracker health,
+            CrawlDeadline deadline
     ) throws Exception {
         List<CommentData> all = new ArrayList<>();
         int page = 1;
@@ -521,8 +535,9 @@ public class DcinsideCrawlService {
         int apiCalls = 0;
 
         while (all.size() < totalCnt && page <= 50) {
+            deadline.check();
             apiCalls++;
-            JsonNode data = fetchCommentPage(referer, galleryId, postNo, esno, galleryType, page, health);
+            JsonNode data = fetchCommentPage(referer, galleryId, postNo, esno, galleryType, page, health, deadline);
             totalCnt = data.path("total_cnt").asInt(0);
             JsonNode comments = data.get("comments");
             if (comments == null || !comments.isArray() || comments.isEmpty()) {
@@ -570,7 +585,8 @@ public class DcinsideCrawlService {
             String esno,
             String galleryType,
             int page,
-            com.evidence.dcinside.fetch.CrawlHealthTracker health
+            com.evidence.dcinside.fetch.CrawlHealthTracker health,
+            CrawlDeadline deadline
     ) throws Exception {
         String form = "id=" + enc(galleryId)
                 + "&no=" + enc(postNo)
@@ -588,7 +604,8 @@ public class DcinsideCrawlService {
                 resolveCommentApiUrl(referer, galleryType),
                 form,
                 referer,
-                resilient
+                resilient,
+                deadline
         );
         String body = response.body();
         if (response.statusCode() != 200 || body.startsWith("<") || body.contains("정상적인 접근")) {
