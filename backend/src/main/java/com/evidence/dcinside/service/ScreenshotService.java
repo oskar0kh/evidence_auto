@@ -64,6 +64,8 @@ public class ScreenshotService {
     private final int pageLoadTimeoutSeconds;
     private final int contentWaitSeconds;
     private final int driverStartTimeoutSeconds;
+    private final int driverStartMaxAttempts;
+    private final long driverRecoveryDelayMs;
     private final boolean blockTracking;
     private final boolean captureAllCommentPages;
     private final CrawlThrottle crawlThrottle;
@@ -78,6 +80,8 @@ public class ScreenshotService {
             @Value("${evidence.screenshot.page-load-timeout-seconds:15}") int pageLoadTimeoutSeconds,
             @Value("${evidence.screenshot.content-wait-seconds:45}") int contentWaitSeconds,
             @Value("${evidence.screenshot.driver-start-timeout-seconds:30}") int driverStartTimeoutSeconds,
+            @Value("${evidence.screenshot.driver-start-max-attempts:3}") int driverStartMaxAttempts,
+            @Value("${evidence.screenshot.driver-recovery-delay-ms:2000}") long driverRecoveryDelayMs,
             @Value("${evidence.screenshot.block-tracking:true}") boolean blockTracking,
             @Value("${evidence.screenshot.capture-all-comment-pages:true}") boolean captureAllCommentPages,
             CrawlThrottle crawlThrottle
@@ -87,6 +91,8 @@ public class ScreenshotService {
         this.pageLoadTimeoutSeconds = pageLoadTimeoutSeconds;
         this.contentWaitSeconds = contentWaitSeconds;
         this.driverStartTimeoutSeconds = driverStartTimeoutSeconds;
+        this.driverStartMaxAttempts = Math.max(1, driverStartMaxAttempts);
+        this.driverRecoveryDelayMs = Math.max(0, driverRecoveryDelayMs);
         this.blockTracking = blockTracking;
         this.captureAllCommentPages = captureAllCommentPages;
         this.crawlThrottle = crawlThrottle;
@@ -184,7 +190,7 @@ public class ScreenshotService {
                         lastError = e;
                         lastTimings = timer.finish();
                         log.warn("Screenshot attempt {}/{} failed for {}: {}", attempt, MAX_CAPTURE_ATTEMPTS, url, e.getMessage());
-                        if (ChromeDriverFactory.isDriverSessionInvalid(e)) {
+                        if (ChromeDriverFactory.isDriverSessionInvalid(e) || ChromeDriverFactory.isDriverStartFailure(e)) {
                             invalidateDriver();
                         }
                         if (attempt < MAX_CAPTURE_ATTEMPTS) {
@@ -264,7 +270,12 @@ public class ScreenshotService {
     }
 
     private ChromeDriver createAndConfigureDriver(StepTimer timer, boolean relaxTracking) throws Exception {
-        ChromeDriver chromeDriver = ChromeDriverFactory.createDriver(chromeBinary, driverStartTimeoutSeconds);
+        ChromeDriver chromeDriver = ChromeDriverFactory.createDriverWithRecovery(
+                chromeBinary,
+                driverStartTimeoutSeconds,
+                driverStartMaxAttempts,
+                driverRecoveryDelayMs
+        );
         if (timer != null) {
             timer.step("create-driver");
         }

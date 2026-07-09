@@ -20,15 +20,24 @@ import {
   formatGalleryLabel,
   hasPartialDateRange,
   isValidDateRange,
+  mergeCrawlProgressEvent,
   mergeSavedResults,
   parseUrls,
   saveBatchResults,
   saveCrawlLog,
 } from './crawlHelpers';
+import {
+  createCrawlSessionMetrics,
+  mergeOperationEvents,
+  observeCrawlHealth,
+  observeCrawlProgress,
+  observeUrlTiming,
+  type CrawlSessionMetrics,
+} from './crawlSessionMetrics';
 import { buildExtraStreamFailures, mergeCrawlFailures } from './crawlLogExport';
 import { isAbortError } from '../../../shared/lib/abort';
 import { isNativeFolderPickerSupported, pickNativeDirectory } from '../../../shared/lib/nativeFolderPicker';
-import type { CrawlFailureRecord, CrawlHealthEvent, UrlTiming } from './types';
+import type { CrawlFailureRecord, CrawlHealthEvent, CrawlProgressEvent, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
 import type { DcinsidePostData } from '../types';
 
@@ -64,6 +73,7 @@ export function useCrawlOrchestrator() {
   const [lastCrawlDurationMs, setLastCrawlDurationMs] = useState<number | null>(null);
   const crawlStartAtRef = useRef<number | null>(null);
   const crawlAbortRef = useRef<AbortController | null>(null);
+  const sessionMetricsRef = useRef<CrawlSessionMetrics | null>(null);
   const lastSearchKeywordRef = useRef<string | undefined>(undefined);
   const lastGalleryNameRef = useRef<string | undefined>(undefined);
 
@@ -126,7 +136,17 @@ export function useCrawlOrchestrator() {
   };
 
   const applyHealthUpdate = (health: CrawlHealthEvent) => {
+    sessionMetricsRef.current && observeCrawlHealth(sessionMetricsRef.current, health);
     setProgress((prev) => (prev ? { ...prev, health } : prev));
+  };
+
+  const applyProgressUpdate = (event: CrawlProgressEvent) => {
+    sessionMetricsRef.current && observeCrawlProgress(sessionMetricsRef.current, event);
+    setProgress((prev) => mergeCrawlProgressEvent(prev, event));
+  };
+
+  const applyUrlTimingUpdate = (timing: UrlTiming) => {
+    sessionMetricsRef.current && observeUrlTiming(sessionMetricsRef.current, timing);
   };
 
   const runSearchCrawl = async (options: {
@@ -142,8 +162,9 @@ export function useCrawlOrchestrator() {
     clearSearchGallery?: boolean;
   }) => {
     const abortSignal = beginCrawlSession();
-
     crawlStartAtRef.current = Date.now();
+    sessionMetricsRef.current = createCrawlSessionMetrics(crawlStartAtRef.current);
+
     setElapsedMs(0);
     setLoading(true);
     setError(null);
@@ -186,14 +207,7 @@ export function useCrawlOrchestrator() {
         },
         savedResults.length + 1,
         (event) => {
-          setProgress({
-            completed: event.completed,
-            total: event.total,
-            currentUrl: event.currentUrl,
-            stage: event.stage,
-            successCount: event.successCount,
-            failCount: event.failCount,
-          });
+          applyProgressUpdate(event);
         },
         async (post) => {
           if (!saveDirectoryRef.current) {
@@ -222,8 +236,11 @@ export function useCrawlOrchestrator() {
           }
         },
         abortSignal,
-        applyHealthUpdate
+        applyHealthUpdate,
+        applyUrlTimingUpdate
       );
+
+      mergeOperationEvents(sessionMetricsRef.current, response.operationEvents ?? []);
 
       const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
       collectProcessedUrls(response, processedUrls);
@@ -314,8 +331,10 @@ export function useCrawlOrchestrator() {
         batchErrors,
         totalMs,
         batchTimings,
-        extraStreamFailures
+        extraStreamFailures,
+        sessionMetricsRef.current
       );
+      sessionMetricsRef.current = null;
       setLoading(false);
       setProgress(null);
       crawlAbortRef.current = null;
@@ -357,11 +376,15 @@ export function useCrawlOrchestrator() {
 
     if (!options?.skipInit) {
       crawlStartAtRef.current = Date.now();
+      sessionMetricsRef.current = createCrawlSessionMetrics(crawlStartAtRef.current);
       setElapsedMs(0);
       setLoading(true);
       setError(null);
       setInfoMessage(null);
       setErrors([]);
+    } else if (!sessionMetricsRef.current) {
+      const startedAt = crawlStartAtRef.current ?? Date.now();
+      sessionMetricsRef.current = createCrawlSessionMetrics(startedAt);
     }
 
     const abortSignal = options?.skipInit
@@ -406,22 +429,24 @@ export function useCrawlOrchestrator() {
           batchUrls,
           nextSerial,
           (event) => {
-            setProgress({
+            setProgress((prev) => ({
+              ...mergeCrawlProgressEvent(prev, event),
               completed: globalCompletedOffset + event.completed,
               total: crawlUrls.length,
-              currentUrl: event.currentUrl,
-              stage: event.stage,
               successCount: successCount + event.successCount,
               failCount: totalFailCount + event.failCount,
-            });
+            }));
           },
           (post) => {
             batchResults = mergeSavedResults(batchResults, [post]);
           },
           abortSignal,
           options?.galleryId,
-          applyHealthUpdate
+          applyHealthUpdate,
+          applyUrlTimingUpdate
         );
+
+        mergeOperationEvents(sessionMetricsRef.current, response.operationEvents ?? []);
 
         const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
         collectProcessedUrls(response, processedUrls);
@@ -529,8 +554,10 @@ export function useCrawlOrchestrator() {
         batchErrors,
         totalMs,
         batchTimings,
-        extraStreamFailures
+        extraStreamFailures,
+        sessionMetricsRef.current
       );
+      sessionMetricsRef.current = null;
       setLoading(false);
       setProgress(null);
       crawlAbortRef.current = null;

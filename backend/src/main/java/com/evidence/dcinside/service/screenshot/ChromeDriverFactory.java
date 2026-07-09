@@ -2,6 +2,7 @@ package com.evidence.dcinside.service.screenshot;
 
 import com.evidence.dcinside.DcinsideConstants;
 import com.evidence.dcinside.DcinsideUserAgent;
+import com.evidence.dcinside.service.CrawlTelemetryBridge;
 import io.github.bonigarcia.wdm.WebDriverManager;
 import org.openqa.selenium.PageLoadStrategy;
 import org.openqa.selenium.WebDriver;
@@ -87,6 +88,71 @@ public final class ChromeDriverFactory {
         return createDriver(chromeBinary, 30);
     }
 
+    public static boolean isDriverStartFailure(Throwable error) {
+        if (error == null) {
+            return false;
+        }
+        if (error instanceof TimeoutException) {
+            return true;
+        }
+        String message = error.getMessage();
+        if (message != null) {
+            String lower = message.toLowerCase();
+            if (lower.contains("chromedriver 시작")
+                    || lower.contains("chromedriver 시작 시간 초과")
+                    || lower.contains("could not start a new session")
+                    || lower.contains("chrome failed to start")
+                    || lower.contains("chrome not reachable")
+                    || lower.contains("unable to create new service")
+                    || lower.contains("session not created")) {
+                return true;
+            }
+        }
+        return error.getCause() != null && isDriverStartFailure(error.getCause());
+    }
+
+    public static void cleanupStaleChromeProcesses() {
+        runQuietProcess("pkill", "-f", "chromedriver");
+        runQuietProcess("pkill", "-f", "chrome.*--headless=new");
+    }
+
+    public static ChromeDriver createDriverWithRecovery(
+            String chromeBinary,
+            int startTimeoutSeconds,
+            int maxAttempts,
+            long recoveryDelayMs
+    ) throws Exception {
+        int attempts = Math.max(1, maxAttempts);
+        Exception lastError = null;
+        for (int attempt = 1; attempt <= attempts; attempt++) {
+            try {
+                return createDriver(chromeBinary, startTimeoutSeconds);
+            } catch (Exception e) {
+                lastError = e;
+                if (!isDriverStartFailure(e) || attempt >= attempts) {
+                    throw e;
+                }
+                log.warn(
+                        "ChromeDriver 시작 실패 ({}/{}): {} — 프로세스 정리 후 재시도",
+                        attempt,
+                        attempts,
+                        e.getMessage()
+                );
+                CrawlTelemetryBridge.record(
+                        "ChromeDriver 복구 재시도 " + attempt + "/" + attempts + ": " + e.getMessage()
+                );
+                cleanupStaleChromeProcesses();
+                if (recoveryDelayMs > 0) {
+                    Thread.sleep(recoveryDelayMs);
+                }
+            }
+        }
+        if (lastError != null) {
+            throw lastError;
+        }
+        throw new IllegalStateException("ChromeDriver 시작 실패");
+    }
+
     public static ChromeDriver createDriver(String chromeBinary, int startTimeoutSeconds) {
         ChromeOptions options = new ChromeOptions();
         options.setBinary(chromeBinary);
@@ -123,8 +189,10 @@ public final class ChromeDriverFactory {
             return future.get(timeout, TimeUnit.SECONDS);
         } catch (TimeoutException e) {
             future.cancel(true);
+            cleanupStaleChromeProcesses();
             throw new IllegalStateException("ChromeDriver 시작 시간 초과 (" + timeout + "초)", e);
         } catch (Exception e) {
+            cleanupStaleChromeProcesses();
             throw new IllegalStateException("ChromeDriver 시작 실패: " + e.getMessage(), e);
         } finally {
             executor.shutdownNow();
@@ -220,5 +288,16 @@ public final class ChromeDriverFactory {
             return matcher.group(1);
         }
         return "";
+    }
+
+    private static void runQuietProcess(String... command) {
+        try {
+            Process process = new ProcessBuilder(command)
+                    .redirectErrorStream(true)
+                    .start();
+            process.waitFor(3, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.debug("Process cleanup skipped ({}): {}", String.join(" ", command), e.getMessage());
+        }
     }
 }

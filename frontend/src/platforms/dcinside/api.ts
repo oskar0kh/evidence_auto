@@ -12,12 +12,14 @@ const searchApi = axios.create({
 
 type UrlResultHandler = (post: DcinsidePostData) => void | Promise<void>;
 type HealthHandler = (health: CrawlHealthEvent) => void;
+type UrlTimingHandler = (timing: UrlTiming) => void;
 
 async function consumeCrawlSseStream(
   response: Response,
   onProgress: (progress: CrawlProgressEvent) => void,
   onUrlResult?: UrlResultHandler,
-  onHealth?: HealthHandler
+  onHealth?: HealthHandler,
+  onUrlTiming?: UrlTimingHandler
 ): Promise<CrawlStreamResult> {
   if (!response.body) {
     throw new Error('스트리밍 응답을 받지 못했습니다.');
@@ -55,7 +57,9 @@ async function consumeCrawlSseStream(
     }
 
     if (message.event === 'url-timing') {
-      accumulated.timings!.push(JSON.parse(message.data) as UrlTiming);
+      const timing = JSON.parse(message.data) as UrlTiming;
+      accumulated.timings!.push(timing);
+      onUrlTiming?.(timing);
       return;
     }
 
@@ -69,12 +73,14 @@ async function consumeCrawlSseStream(
         successCount: number;
         failCount: number;
         attemptedCount: number;
+        operationEvents?: string[];
       };
       finalResult = {
         ...accumulated,
         successCount: summary.successCount,
         failCount: summary.failCount,
         attemptedCount: summary.attemptedCount,
+        operationEvents: summary.operationEvents ?? [],
       };
       return;
     }
@@ -152,7 +158,8 @@ async function postCrawlStream(
   onProgress: (progress: CrawlProgressEvent) => void,
   onUrlResult?: UrlResultHandler,
   signal?: AbortSignal,
-  onHealth?: HealthHandler
+  onHealth?: HealthHandler,
+  onUrlTiming?: UrlTimingHandler
 ): Promise<CrawlStreamResult> {
   const response = await fetch(endpoint, {
     method: 'POST',
@@ -177,7 +184,7 @@ async function postCrawlStream(
     throw new Error(message);
   }
 
-  return consumeCrawlSseStream(response, onProgress, onUrlResult, onHealth);
+  return consumeCrawlSseStream(response, onProgress, onUrlResult, onHealth, onUrlTiming);
 }
 
 export async function crawlDcinsideStream(
@@ -187,7 +194,8 @@ export async function crawlDcinsideStream(
   onUrlResult?: UrlResultHandler,
   signal?: AbortSignal,
   galleryId?: string,
-  onHealth?: HealthHandler
+  onHealth?: HealthHandler,
+  onUrlTiming?: UrlTimingHandler
 ): Promise<CrawlStreamResult> {
   return postCrawlStream(
     '/api/crawl/dcinside/stream',
@@ -199,7 +207,8 @@ export async function crawlDcinsideStream(
     onProgress,
     onUrlResult,
     signal,
-    onHealth
+    onHealth,
+    onUrlTiming
   );
 }
 
@@ -210,7 +219,8 @@ export async function searchCrawlDcinsideStream(
   onProgress: (progress: CrawlProgressEvent) => void,
   onUrlResult?: UrlResultHandler,
   signal?: AbortSignal,
-  onHealth?: HealthHandler
+  onHealth?: HealthHandler,
+  onUrlTiming?: UrlTimingHandler
 ): Promise<CrawlStreamResult> {
   const { maxResults = 100, startDate, endDate, galleryId } = options;
   return postCrawlStream(
@@ -226,7 +236,8 @@ export async function searchCrawlDcinsideStream(
     onProgress,
     onUrlResult,
     signal,
-    onHealth
+    onHealth,
+    onUrlTiming
   );
 }
 

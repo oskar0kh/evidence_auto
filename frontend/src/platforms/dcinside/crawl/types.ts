@@ -16,6 +16,7 @@ export interface CrawlStreamResult extends CrawlResponse {
   successCount?: number;
   failCount?: number;
   attemptedCount?: number;
+  operationEvents?: string[];
   interrupted?: boolean;
   interruptMessage?: string;
 }
@@ -27,6 +28,10 @@ export interface CrawlProgressEvent {
   stage: string;
   successCount: number;
   failCount: number;
+  urlAttempt?: number | null;
+  urlAttemptMax?: number | null;
+  urlAttemptPhase?: string | null;
+  urlDeadlineRemainingMs?: number | null;
 }
 
 export interface CrawlHealthEvent {
@@ -46,6 +51,10 @@ export interface UrlTiming {
   success: boolean;
   totalMs: number;
   steps: Record<string, number>;
+  urlAttempt?: number | null;
+  urlAttemptMax?: number | null;
+  urlAttemptPhase?: string | null;
+  urlDeadlineRemainingMs?: number | null;
 }
 
 export interface CrawlLogEntry {
@@ -66,4 +75,7 @@ export interface CrawlLogEntry {
   captureImagesMs?: number;
   screenshotMs?: number;
   stepDetails: Record<string, number>;
+  operationLog?: string;
+  urlRetrySummary?: string;
+  healthSummary?: string;
 }

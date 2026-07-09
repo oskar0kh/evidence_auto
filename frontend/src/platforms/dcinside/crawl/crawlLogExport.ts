@@ -31,6 +31,9 @@ const COLUMNS = [
   { header: '스크린샷 합계', key: 'screenshotMs', width: 22 },
   { header: '평균 글당 소요', key: 'avgPerPostMs', width: 22 },
   { header: '구간별 상세', key: 'stepDetails', width: 80 },
+  { header: '운영 이벤트', key: 'operationLog', width: 60 },
+  { header: 'URL 재시도', key: 'urlRetrySummary', width: 60 },
+  { header: '보호/상태 이벤트', key: 'healthSummary', width: 60 },
 ] as const;
 
 const STEP_NAME_LABELS: Record<string, string> = {
@@ -223,6 +226,9 @@ function buildRowValues(entry: CrawlLogEntry): Record<string, string | number> {
     screenshotMs: formatOptionalDuration(entry.screenshotMs),
     avgPerPostMs: avgPerPostMs > 0 ? formatLogDuration(avgPerPostMs) : '',
     stepDetails: sanitizeExcelText(formatStepDetails(entry.stepDetails)),
+    operationLog: sanitizeExcelText(entry.operationLog ?? ''),
+    urlRetrySummary: sanitizeExcelText(entry.urlRetrySummary ?? ''),
+    healthSummary: sanitizeExcelText(entry.healthSummary ?? ''),
   };
 }
 

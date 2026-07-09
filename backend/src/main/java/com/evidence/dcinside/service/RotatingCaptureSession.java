@@ -12,45 +12,54 @@ public class RotatingCaptureSession implements AutoCloseable {
 
     private final ScreenshotService screenshotService;
     private final int rotateEveryUrls;
+    private final CrawlTelemetry crawlTelemetry;
     private ScreenshotService.CaptureSession current;
     private int urlsSinceRotation;
 
-    public RotatingCaptureSession(ScreenshotService screenshotService, int rotateEveryUrls) {
+    public RotatingCaptureSession(
+            ScreenshotService screenshotService,
+            int rotateEveryUrls,
+            CrawlTelemetry crawlTelemetry
+    ) {
         this.screenshotService = screenshotService;
         this.rotateEveryUrls = Math.max(0, rotateEveryUrls);
+        this.crawlTelemetry = crawlTelemetry;
     }
 
     public ScreenshotService.CaptureSession current() throws Exception {
+        if (rotateEveryUrls > 0 && current != null && urlsSinceRotation >= rotateEveryUrls) {
+            rotateSession("scheduled");
+        }
         if (current == null) {
-            openFreshSession();
+            openFreshSession("initial");
         }
         return current;
     }
 
     public void afterUrlProcessed() {
-        if (rotateEveryUrls <= 0 || current == null) {
+        if (current == null) {
             return;
         }
         urlsSinceRotation++;
-        if (urlsSinceRotation < rotateEveryUrls) {
-            return;
-        }
-        try {
-            rotateSession("scheduled");
-        } catch (Exception e) {
-            log.warn("Chrome 세션 주기 교체 실패: {}", e.getMessage());
-        }
     }
 
     public void rotateSession(String reason) throws Exception {
+        crawlTelemetry.record("Chrome 세션 교체 시작 (" + reason + ")");
         closeCurrentQuietly();
-        openFreshSession();
+        openFreshSession(reason);
         log.info("Chrome capture session rotated ({})", reason);
+        crawlTelemetry.record("Chrome 세션 교체 완료 (" + reason + ")");
     }
 
-    private void openFreshSession() throws Exception {
-        current = screenshotService.openCaptureSession();
-        urlsSinceRotation = 0;
+    private void openFreshSession(String reason) throws Exception {
+        try {
+            current = screenshotService.openCaptureSession();
+            urlsSinceRotation = 0;
+            crawlTelemetry.record("Chrome capture session opened (" + reason + ")");
+        } catch (Exception e) {
+            crawlTelemetry.record("Chrome 세션 시작 실패 (" + reason + "): " + e.getMessage());
+            throw e;
+        }
     }
 
     private void closeCurrentQuietly() {

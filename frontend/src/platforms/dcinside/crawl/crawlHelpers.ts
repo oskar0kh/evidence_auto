@@ -8,12 +8,22 @@ import {
   pickStepMs,
 } from './crawlLogExport';
 import {
+  countUrlBudgetTimeouts,
+  createCrawlSessionMetrics,
+  formatCrawlSessionMetricsForLog,
+  mergeOperationEvents,
+  observeCrawlHealth,
+  observeCrawlProgress,
+  observeUrlTiming,
+  type CrawlSessionMetrics,
+} from './crawlSessionMetrics';
+import {
   appendBatchToSession,
   createCrawlPersistSession,
   type CrawlPersistSession,
   type PersistResultsOptions,
 } from '../export/persistResults';
-import type { CrawlFailureRecord, CrawlHealthEvent, CrawlLogEntry, UrlTiming } from './types';
+import type { CrawlFailureRecord, CrawlHealthEvent, CrawlLogEntry, CrawlProgressEvent, UrlTiming } from './types';
 import type { GalleryCandidate } from '../search/types';
 import type { DcinsidePostData } from '../types';
 
@@ -43,6 +53,10 @@ export interface CrawlProgress {
   successCount: number;
   failCount: number;
   health?: CrawlHealthEvent | null;
+  urlAttempt?: number;
+  urlAttemptMax?: number;
+  urlAttemptPhase?: string;
+  urlDeadlineRemainingMs?: number;
 }
 
 export interface CrawlLogContext {
@@ -77,6 +91,49 @@ export function formatHealthLabel(health: CrawlHealthEvent | null | undefined): 
     return `일시 차단(${health.lastBlockSignalLabel}) · 재시도 중`;
   }
   return null;
+}
+
+export function formatUrlAttemptLabel(progress: CrawlProgress): string | null {
+  if (progress.urlAttempt == null || progress.urlAttemptMax == null) {
+    return null;
+  }
+  const phase =
+    progress.urlAttemptPhase === 'protective'
+      ? 'Protective'
+      : progress.urlAttemptPhase === 'fast'
+        ? 'Fast'
+        : '';
+  const prefix = phase ? `${phase} ` : '';
+  return `${prefix}재시도 ${progress.urlAttempt}/${progress.urlAttemptMax}`;
+}
+
+export function formatDeadlineRemainingLabel(remainingMs?: number): string | null {
+  if (remainingMs == null || remainingMs < 0) {
+    return null;
+  }
+  const totalSeconds = Math.ceil(remainingMs / 1000);
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `URL 예산 ${minutes}:${seconds.toString().padStart(2, '0')} 남음`;
+}
+
+export function mergeCrawlProgressEvent(
+  prev: CrawlProgress | null,
+  event: CrawlProgressEvent
+): CrawlProgress {
+  return {
+    completed: event.completed,
+    total: event.total,
+    currentUrl: event.currentUrl,
+    stage: event.stage,
+    successCount: event.successCount,
+    failCount: event.failCount,
+    health: prev?.health ?? null,
+    urlAttempt: event.urlAttempt ?? undefined,
+    urlAttemptMax: event.urlAttemptMax ?? undefined,
+    urlAttemptPhase: event.urlAttemptPhase ?? undefined,
+    urlDeadlineRemainingMs: event.urlDeadlineRemainingMs ?? undefined,
+  };
 }
 
 export function parseUrls(input: string): string[] {
@@ -183,7 +240,8 @@ export async function saveCrawlLog(
   errors: CrawlFailureRecord[],
   totalMs: number,
   timings: UrlTiming[],
-  extraFailures: CrawlFailureRecord[] = []
+  extraFailures: CrawlFailureRecord[] = [],
+  sessionMetrics?: CrawlSessionMetrics | null
 ): Promise<void> {
   if (!directory) {
     return;
@@ -191,6 +249,9 @@ export async function saveCrawlLog(
 
   const mergedFailures = mergeCrawlFailures(errors, timings, extraFailures);
   const stepDetails = aggregateStepTimings(timings);
+  const metrics = sessionMetrics ?? createCrawlSessionMetrics();
+  countUrlBudgetTimeouts(metrics, mergedFailures);
+  const formattedMetrics = formatCrawlSessionMetricsForLog(metrics);
   const entry: CrawlLogEntry = {
     executedAt: formatExecutedAt(),
     keyword: context.keyword,
@@ -211,6 +272,9 @@ export async function saveCrawlLog(
     captureImagesMs: pickStepMs(stepDetails, 'capture-images'),
     screenshotMs: pickFirstStepMs(stepDetails, 'screenshot'),
     stepDetails,
+    operationLog: formattedMetrics.operationLog,
+    urlRetrySummary: formattedMetrics.urlRetrySummary,
+    healthSummary: formattedMetrics.healthSummary,
   };
 
   try {

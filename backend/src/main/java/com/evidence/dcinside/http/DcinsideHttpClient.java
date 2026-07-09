@@ -2,6 +2,7 @@ package com.evidence.dcinside.http;
 
 import com.evidence.dcinside.CrawlDeadline;
 import com.evidence.dcinside.DcinsideConstants;
+import com.evidence.dcinside.service.CrawlTelemetryBridge;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -212,6 +213,9 @@ public class DcinsideHttpClient {
         log.warn(
                 "연속 HTTP 연결 실패 {}회 — 쿠키 초기화 후 쿨다운 적용",
                 consecutiveConnectionFailures
+        );
+        CrawlTelemetryBridge.record(
+                "HTTP 연결 실패 " + consecutiveConnectionFailures + "회 — 쿠키 reset + 쿨다운"
         );
         resetCookies();
         consecutiveConnectionFailures = 0;
