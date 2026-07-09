@@ -60,8 +60,9 @@ export function appendResultPreviews(
   if (posts.length === 0) {
     return existing;
   }
-  const merged = [...existing, ...posts.map(toResultPreview)];
-  return merged.length > max ? merged.slice(-max) : merged;
+  const incoming = posts.map(toResultPreview).reverse();
+  const merged = [...incoming, ...existing];
+  return merged.length > max ? merged.slice(0, max) : merged;
 }
 
 export const STAGE_LABELS: Record<string, string> = {
@@ -130,20 +131,6 @@ export function formatHealthLabel(health: CrawlHealthEvent | null | undefined): 
   return null;
 }
 
-export function formatUrlAttemptLabel(progress: CrawlProgress): string | null {
-  if (progress.urlAttempt == null || progress.urlAttemptMax == null) {
-    return null;
-  }
-  const phase =
-    progress.urlAttemptPhase === 'protective'
-      ? 'Protective'
-      : progress.urlAttemptPhase === 'fast'
-        ? 'Fast'
-        : '';
-  const prefix = phase ? `${phase} ` : '';
-  return `${prefix}재시도 ${progress.urlAttempt}/${progress.urlAttemptMax}`;
-}
-
 export function formatDeadlineRemainingLabel(remainingMs?: number): string | null {
   if (remainingMs == null || remainingMs < 0) {
     return null;
@@ -151,7 +138,7 @@ export function formatDeadlineRemainingLabel(remainingMs?: number): string | nul
   const totalSeconds = Math.ceil(remainingMs / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
-  return `URL 예산 ${minutes}:${seconds.toString().padStart(2, '0')} 남음`;
+  return `다음 URL까지 ${minutes}:${seconds.toString().padStart(2, '0')} 남음`;
 }
 
 export function mergeCrawlProgressEvent(

@@ -6,7 +6,6 @@ import {
   formatDeadlineRemainingLabel,
   formatHealthLabel,
   formatStageLabel,
-  formatUrlAttemptLabel,
   shortenUrl,
 } from '../crawlHelpers';
 
@@ -24,7 +23,6 @@ export default function CrawlProgressPanel({
   const progressPercent = computeProgressPercent(progress, loading);
   const progressLabel = computeProgressLabel(progress, loading);
   const healthLabel = formatHealthLabel(progress.health);
-  const attemptLabel = formatUrlAttemptLabel(progress);
   const deadlineLabel = formatDeadlineRemainingLabel(progress.urlDeadlineRemainingMs);
 
   return (
@@ -35,10 +33,9 @@ export default function CrawlProgressPanel({
           <span className="progress-percent"> ({progressPercent}%)</span>
         </span>
         <span className="progress-stats">
-          성공 {progress.successCount} · 실패 {progress.failCount} · 수집{' '}
+          성공 {progress.successCount} · 실패 {progress.failCount}
+          {deadlineLabel ? ` · ${deadlineLabel}` : ''} · 총 소요시간{' '}
           {formatElapsedForUi(elapsedMs)}
-          {attemptLabel ? ` · ${attemptLabel}` : ''}
-          {deadlineLabel ? ` · ${deadlineLabel}` : ''}
         </span>
       </div>
       <div className="progress-track">

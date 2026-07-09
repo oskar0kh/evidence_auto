@@ -10,8 +10,6 @@ export default function ResultsSection({ savedCount, resultsPreview }: ResultsSe
     return null;
   }
 
-  const previewStartSerial = Math.max(1, savedCount - resultsPreview.length + 1);
-
   return (
     <section className="result-section">
       <div className="result-section-header">
@@ -27,7 +25,7 @@ export default function ResultsSection({ savedCount, resultsPreview }: ResultsSe
         {resultsPreview.map((post, index) => (
           <article key={post.url} className="result-card">
             <h3>
-              <span className="result-serial">{previewStartSerial + index}.</span> {post.title}
+              <span className="result-serial">{savedCount - index}.</span> {post.title}
             </h3>
             <dl>
               <div>
