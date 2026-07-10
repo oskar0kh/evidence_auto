@@ -7,14 +7,13 @@ import com.evidence.dcinside.dto.DcinsidePostData;
 import com.evidence.dcinside.dto.CaptureImage;
 import com.evidence.dcinside.dto.TimedResult;
 import com.evidence.dcinside.exception.StageTimedException;
+import com.evidence.dcinside.util.BodyTextNormalizer;
 import com.evidence.dcinside.util.StepTimer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.jsoup.Jsoup;
 import org.jsoup.nodes.Document;
 import org.jsoup.nodes.Element;
-import org.jsoup.nodes.Node;
-import org.jsoup.nodes.TextNode;
 import org.jsoup.select.Elements;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -395,61 +394,12 @@ public class DcinsideCrawlService {
             content = doc.selectFirst(".gallview_contents .writing_view");
         }
         if (content != null) {
-            String htmlBody = htmlToPlainTextWithLineBreaks(content);
+            String htmlBody = BodyTextNormalizer.htmlToPlainText(content);
             if (!htmlBody.isBlank()) {
                 return htmlBody;
             }
         }
-        return jsonLdBody == null ? "" : jsonLdBody;
-    }
-
-    private String htmlToPlainTextWithLineBreaks(Element root) {
-        Element clone = root.clone();
-        clone.select("script, style").remove();
-
-        StringBuilder sb = new StringBuilder();
-        appendPlainText(clone, sb);
-        return normalizeBodyLines(sb.toString());
-    }
-
-    private void appendPlainText(Node node, StringBuilder sb) {
-        if (node instanceof TextNode textNode) {
-            sb.append(textNode.text());
-            return;
-        }
-        if (!(node instanceof Element element)) {
-            return;
-        }
-
-        String tag = element.tagName().toLowerCase();
-        if ("br".equals(tag)) {
-            sb.append('\n');
-            return;
-        }
-
-        for (Node child : element.childNodes()) {
-            appendPlainText(child, sb);
-        }
-
-        if ("p".equals(tag) || "div".equals(tag) || "li".equals(tag) || "blockquote".equals(tag)) {
-            sb.append('\n');
-        }
-    }
-
-    private String normalizeBodyLines(String text) {
-        String[] lines = text.replace('\r', '\n').split("\n");
-        StringBuilder normalized = new StringBuilder();
-        for (String line : lines) {
-            String trimmed = line.strip();
-            if (trimmed.isEmpty()) {
-                continue;
-            }
-            if (normalized.length() > 0) {
-                normalized.append('\n');
-            }
-            normalized.append(trimmed);
-        }
-        return normalized.toString();
+        return jsonLdBody == null ? "" : BodyTextNormalizer.normalizeBodyLines(jsonLdBody);
     }
 
     // 텍스트 또는 빈 문자열 반환

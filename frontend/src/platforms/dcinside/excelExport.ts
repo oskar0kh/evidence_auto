@@ -40,9 +40,16 @@ const THUMBNAIL_COLUMN = 11;
 const URL_COLUMN = 9;
 
 const MIN_ROW_HEIGHT = 24;
-const MAX_ROW_HEIGHT = 250;
+/** Excel 행 높이 상한(포인트). 250pt는 긴 본문·댓글이 다음 행과 겹쳐 보였다. */
+const MAX_ROW_HEIGHT = 409;
 const LINE_HEIGHT_PT = 15;
 const ROW_PADDING_PT = 10;
+/** 행 높이 계산에 사용할 컬럼: 제목·내용·댓글·비고 */
+const TEXT_HEIGHT_COLUMN_INDEXES = [4, 5, 6, 7] as const;
+
+function clampRowHeight(heightPt: number): number {
+  return Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, heightPt));
+}
 
 function stringCellValue(value: unknown): string {
   return plainTextFromCellValue(value);
@@ -62,14 +69,14 @@ function estimateWrappedLines(text: string, columnWidth: number): number {
 function calculateRowHeight(values: unknown[]): number {
   let maxLines = 1;
 
-  values.forEach((value, index) => {
+  TEXT_HEIGHT_COLUMN_INDEXES.forEach((index) => {
     const columnWidth = COLUMNS[index]?.width ?? 10;
-    const lines = estimateWrappedLines(stringCellValue(value), columnWidth);
+    const lines = estimateWrappedLines(stringCellValue(values[index]), columnWidth);
     maxLines = Math.max(maxLines, lines);
   });
 
   const contentHeight = maxLines * LINE_HEIGHT_PT + ROW_PADDING_PT;
-  return Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, contentHeight));
+  return clampRowHeight(contentHeight);
 }
 
 function columnWidthToPixels(columnWidth: number): number {
@@ -101,7 +108,7 @@ function rowHeightForContainedImage(
   const scale = cellWidthPx / imageWidth;
   const scaledHeightPx = imageHeight * scale;
   const heightPt = (scaledHeightPx * 72) / 96 + ROW_PADDING_PT;
-  return Math.min(MAX_ROW_HEIGHT, Math.max(MIN_ROW_HEIGHT, heightPt));
+  return clampRowHeight(heightPt);
 }
 
 function fitThumbnailToPngBase64(
