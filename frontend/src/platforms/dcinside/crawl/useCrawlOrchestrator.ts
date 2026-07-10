@@ -12,6 +12,7 @@ import {
   collectCrawlResponse,
   collectProcessedUrls,
   formatInterruptedMessage,
+  buildPartialFailureMessage,
   resolveCrawlMessages,
 } from './crawlSession';
 import {
@@ -341,7 +342,7 @@ export function useCrawlOrchestrator() {
       } else if (successCount === 0 && batchErrors.length > 0) {
         errorMessage = '이번 요청의 모든 URL 처리에 실패했습니다.';
       } else if (batchErrors.length > 0) {
-        errorMessage = `일부 URL 처리에 실패했습니다. (성공 ${successCount}건, 실패 ${batchErrors.length}건)`;
+        errorMessage = buildPartialFailureMessage(successCount, batchErrors.length);
       }
     } catch (e) {
       if (isAbortError(e)) {
@@ -378,6 +379,7 @@ export function useCrawlOrchestrator() {
         errorMessage,
         autoSaved,
         totalSavedCount,
+        successCount,
         batchErrors,
         processedUrls,
       });
@@ -609,7 +611,7 @@ export function useCrawlOrchestrator() {
       } else if (successCount === 0 && batchErrors.length > 0) {
         errorMessage = '이번 요청의 모든 URL 처리에 실패했습니다.';
       } else if (batchErrors.length > 0) {
-        errorMessage = `일부 URL 처리에 실패했습니다. (성공 ${successCount}건, 실패 ${batchErrors.length}건)`;
+        errorMessage = buildPartialFailureMessage(successCount, batchErrors.length);
       }
     } catch (e) {
       if (isAbortError(e)) {
@@ -638,6 +640,7 @@ export function useCrawlOrchestrator() {
         errorMessage,
         autoSaved,
         totalSavedCount,
+        successCount,
         batchErrors,
         processedUrls,
         cancelUrls: wasCancelled ? crawlUrls : undefined,

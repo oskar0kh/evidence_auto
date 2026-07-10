@@ -55,6 +55,18 @@ export function formatInterruptedMessage(
   return base;
 }
 
+export function buildPartialFailureMessage(successCount: number, failCount: number): string {
+  return `일부 URL 처리에 실패했습니다 (성공 ${successCount}건, 실패 ${failCount}건)`;
+}
+
+export function buildPartialFailureWithAutoSaveInfo(
+  successCount: number,
+  failCount: number,
+  savedCount: number
+): string {
+  return `${buildPartialFailureMessage(successCount, failCount)}\n완료된 ${savedCount}건은 선택한 폴더에 자동 저장 됐습니다.`;
+}
+
 export function appendAutoSaveNotice(message: string, savedCount: number): string {
   return `${message} 완료된 ${savedCount}건은 선택한 폴더에 자동 저장됐습니다.`;
 }
@@ -65,6 +77,7 @@ export interface CrawlFinalizeInput {
   errorMessage: string | null;
   autoSaved: boolean;
   totalSavedCount: number;
+  successCount?: number;
   batchErrors: CrawlFailureRecord[];
   processedUrls: Set<string>;
   cancelUrls?: string[];
@@ -83,6 +96,25 @@ export function resolveCrawlMessages(input: CrawlFinalizeInput): {
   }
 
   if (errorMessage) {
+    const successCount = input.successCount ?? 0;
+    const failCount = batchErrors.length;
+    const isPartialFailure =
+      successCount > 0 &&
+      failCount > 0 &&
+      !wasInterrupted &&
+      errorMessage === buildPartialFailureMessage(successCount, failCount);
+
+    if (isPartialFailure && autoSaved) {
+      return {
+        errorMessage: null,
+        infoMessage: buildPartialFailureWithAutoSaveInfo(
+          successCount,
+          failCount,
+          totalSavedCount
+        ),
+      };
+    }
+
     if (autoSaved && !wasInterrupted) {
       errorMessage = appendAutoSaveNotice(errorMessage, totalSavedCount);
     }
