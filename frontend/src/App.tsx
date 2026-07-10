@@ -12,11 +12,6 @@ export default function App() {
     <div className="app">
       <header className="app-header">
         <h1>범죄일람표 크롤러</h1>
-        <p>
-          검색 크롤링은 URL을 찾는 즉시 수집·캡처합니다.<br></br> URL 직접 입력은 100건 단위로 진행되며, 각
-          배치가 끝날 때마다 선택한 폴더의 동일한 결과물 폴더에 엑셀·캡처가 자동 저장됩니다.<br></br> 수동
-          저장 버튼은 화면에 별도로 보관된 결과를 새 폴더에 보낼 때 사용합니다.
-        </p>
       </header>
 
       <main className="app-main">

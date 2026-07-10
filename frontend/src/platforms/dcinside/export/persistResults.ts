@@ -9,6 +9,7 @@ import {
 import {
   addPostRowToWorkbook,
   createCrimeListWorkbook,
+  mergeCrimeListWorkbooks,
   serializeCrimeListWorkbook,
 } from '../excelExport';
 import { EXCEL_FLUSH_INTERVAL, EXCEL_SHARD_ROW_LIMIT } from '../crawl/constants';
@@ -50,6 +51,7 @@ interface ShardState {
  * - 실행마다 결과물_{stamp} 루트 폴더를 하나 만들고, 그 아래에 연번 범위 shard 폴더를 쌓는다.
  * - 워크북을 메모리에 들고 있다가 주기적으로만 디스크에 flush한다(반복 재로드 제거).
  * - shard(엑셀 파일 + 이미지 폴더)를 최대 EXCEL_SHARD_ROW_LIMIT행까지만 채우고 롤오버한다.
+ * - 크롤 종료 시 finalizeCrawlPersistSession이 shard를 루트의 단일 엑셀·Screenshot으로 병합한다.
  * - seenUrls로 canonical URL 기준 전역 중복을 건너뛴다(파일이 나뉘어도 dedup 유지).
  */
 export interface CrawlPersistSession {
@@ -62,6 +64,8 @@ export interface CrawlPersistSession {
   communityName?: string;
   seenUrls: Set<string>;
   shardIndex: number;
+  /** 롤오버로 닫힌 shard(워크북·스크린샷 디렉터리 참조 유지). 종료 시 병합에 사용한다. */
+  completedShards: ShardState[];
   shard: ShardState | null;
 }
 
@@ -88,6 +92,7 @@ export async function createCrawlPersistSession(
     communityName: options.communityName,
     seenUrls: new Set<string>(),
     shardIndex: 0,
+    completedShards: [],
     shard: null,
   };
 }
@@ -139,6 +144,7 @@ async function ensureShardWithCapacity(session: CrawlPersistSession): Promise<Sh
   }
   if (session.shard.rows >= EXCEL_SHARD_ROW_LIMIT) {
     await flushShard(session.shard);
+    session.completedShards.push(session.shard);
     return openNextShard(session);
   }
   return session.shard;
@@ -206,38 +212,95 @@ async function copyDirectoryContents(
   }
 }
 
-/**
- * 마지막 shard 폴더명을 실제 수집 개수에 맞게 보정한다.
- * File System Access API가 디렉터리 이름 변경(move)을 지원하지 않아,
- * 올바른 이름의 폴더를 새로 만들고 내용을 복사한 뒤 기존 폴더를 제거한다.
- */
-async function renameShardToActualRange(
-  session: CrawlPersistSession,
-  shard: ShardState
-): Promise<void> {
-  if (shard.rows === 0) {
-    return;
+function collectShardsForMerge(session: CrawlPersistSession): ShardState[] {
+  const shards = [...session.completedShards];
+  if (session.shard && session.shard.rows > 0) {
+    shards.push(session.shard);
   }
-  const actualEnd = shard.startSerial + shard.rows - 1;
-  const desiredName = buildShardFolderName(shard.startSerial, actualEnd);
-  if (desiredName === shard.folderName) {
-    return;
-  }
-  const newDir = await getOrCreateSubdirectory(session.resultsRoot, desiredName);
-  await copyDirectoryContents(shard.resultDir, newDir);
-  await session.resultsRoot.removeEntry(shard.folderName, { recursive: true });
-  shard.resultDir = newDir;
-  shard.folderName = desiredName;
+  return shards;
 }
 
-/** 크롤링 종료 시 아직 디스크에 반영되지 않은 마지막 행들을 저장하고, 폴더명을 보정한다. */
+function loadImageFromObjectUrl(url: string): Promise<HTMLImageElement> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('캡처 이미지를 읽을 수 없습니다.'));
+    image.src = url;
+  });
+}
+
+async function loadCaptureImageFromDirectory(
+  screenshotDir: FileSystemDirectoryHandle,
+  captureRelativePath: string
+): Promise<HTMLImageElement | null> {
+  const filename = getCaptureFilename(captureRelativePath);
+  try {
+    const fileHandle = await screenshotDir.getFileHandle(filename);
+    const file = await fileHandle.getFile();
+    const url = URL.createObjectURL(file);
+    try {
+      return await loadImageFromObjectUrl(url);
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * shard별로 나뉜 범죄일람표·Screenshot을 결과물 루트의 단일 파일·폴더로 합친 뒤
+ * shard 하위 폴더(예: 1-200)는 제거한다.
+ */
+async function mergeShardResults(session: CrawlPersistSession): Promise<void> {
+  const shards = collectShardsForMerge(session);
+  if (shards.length === 0) {
+    return;
+  }
+
+  const excelFilename = buildExcelFilename({
+    keyword: session.keyword,
+    communityName: session.communityName,
+    galleryName: session.galleryName,
+    stamp: session.stamp,
+  });
+  const mergedScreenshotDir = await getOrCreateSubdirectory(
+    session.resultsRoot,
+    SCREENSHOT_DIR
+  );
+
+  for (const shard of shards) {
+    await copyDirectoryContents(shard.screenshotDir, mergedScreenshotDir);
+  }
+
+  const resolveThumbnail = (captureRelativePath: string) =>
+    loadCaptureImageFromDirectory(mergedScreenshotDir, captureRelativePath);
+
+  const mergedWorkbook = await mergeCrimeListWorkbooks(
+    shards.map((shard) => shard.workbook),
+    resolveThumbnail
+  );
+
+  const buffer = await serializeCrimeListWorkbook(mergedWorkbook);
+  await writeArrayBufferToDirectory(session.resultsRoot, excelFilename, buffer);
+
+  for (const shard of shards) {
+    try {
+      await session.resultsRoot.removeEntry(shard.folderName, { recursive: true });
+    } catch (error) {
+      console.warn(`shard 폴더 제거 실패 (${shard.folderName}):`, error);
+    }
+  }
+}
+
+/** 크롤링 종료 시 마지막 flush 후 shard를 하나의 범죄일람표·Screenshot으로 병합한다. */
 export async function finalizeCrawlPersistSession(
   session: CrawlPersistSession
 ): Promise<void> {
   if (session.shard) {
     await flushShard(session.shard);
-    await renameShardToActualRange(session, session.shard);
   }
+  await mergeShardResults(session);
 }
 
 /** 수동 저장: 전체 결과를 새 결과물 폴더 집합에 shard 단위로 내보낸다. */

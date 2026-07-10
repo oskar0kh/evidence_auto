@@ -55,6 +55,20 @@ function stringCellValue(value: unknown): string {
   return plainTextFromCellValue(value);
 }
 
+/** 캡처파일 컬럼 값(하이퍼링크·일반 문자열)에서 Screenshot/... 상대 경로를 읽는다. */
+function capturePathFromCellValue(value: unknown): string {
+  if (value == null) {
+    return '';
+  }
+  if (typeof value === 'object' && value !== null && 'text' in value) {
+    const text = (value as { text?: unknown }).text;
+    if (typeof text === 'string') {
+      return text;
+    }
+  }
+  return stringCellValue(value);
+}
+
 function estimateWrappedLines(text: string, columnWidth: number): number {
   if (!text) {
     return 1;
@@ -93,6 +107,29 @@ function loadImageFromBase64(base64: string): Promise<HTMLImageElement> {
     image.onload = () => resolve(image);
     image.onerror = () => reject(new Error('캡처 이미지를 읽을 수 없습니다.'));
     image.src = `data:image/png;base64,${base64}`;
+  });
+}
+
+async function embedThumbnailInRow(
+  workbook: ExcelJS.Workbook,
+  sheet: ExcelJS.Worksheet,
+  rowIndex: number,
+  rowHeight: number,
+  captureImage: HTMLImageElement
+): Promise<void> {
+  const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
+  const cellWidthPx = columnWidthToPixels(thumbnailColumnWidth);
+  const cellHeightPx = rowHeightToPixels(rowHeight);
+  const thumbnail = fitThumbnailToPngBase64(captureImage, cellWidthPx, cellHeightPx);
+  const imageId = workbook.addImage({
+    base64: thumbnail.base64,
+    extension: 'png',
+  });
+  const tlCol = THUMBNAIL_COLUMN - 1;
+  const tlRow = rowIndex - 1;
+  sheet.addImage(imageId, {
+    tl: { col: tlCol, row: tlRow },
+    ext: { width: thumbnail.width, height: thumbnail.height },
   });
 }
 
@@ -275,20 +312,7 @@ async function writePostToSheet(
   }
 
   if (captureImage) {
-    const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
-    const cellWidthPx = columnWidthToPixels(thumbnailColumnWidth);
-    const cellHeightPx = rowHeightToPixels(rowHeight);
-    const thumbnail = fitThumbnailToPngBase64(captureImage, cellWidthPx, cellHeightPx);
-    const imageId = workbook.addImage({
-      base64: thumbnail.base64,
-      extension: 'png',
-    });
-    const tlCol = THUMBNAIL_COLUMN - 1;
-    const tlRow = rowIndex - 1;
-    sheet.addImage(imageId, {
-      tl: { col: tlCol, row: tlRow },
-      ext: { width: thumbnail.width, height: thumbnail.height },
-    });
+    await embedThumbnailInRow(workbook, sheet, rowIndex, rowHeight, captureImage);
   }
 }
 
@@ -318,4 +342,88 @@ export async function serializeCrimeListWorkbook(
 ): Promise<ArrayBuffer> {
   const buffer = await workbook.xlsx.writeBuffer();
   return buffer as ArrayBuffer;
+}
+
+/**
+ * shard 워크북의 데이터 행을 대상 워크북 시트 끝에 이어 붙인다.
+ * 썸네일은 resolveThumbnail로 PNG를 다시 읽어 넣는다(병합 시 이미지 유실 방지).
+ */
+export async function appendCrimeListSheetRows(
+  sourceWorkbook: ExcelJS.Workbook,
+  targetWorkbook: ExcelJS.Workbook,
+  targetSheet: ExcelJS.Worksheet,
+  resolveThumbnail?: (captureRelativePath: string) => Promise<HTMLImageElement | null>
+): Promise<void> {
+  const sourceSheet = sourceWorkbook.getWorksheet(SHEET_NAME);
+  if (!sourceSheet) {
+    return;
+  }
+
+  for (let sourceRowIndex = DATA_START_ROW; ; sourceRowIndex++) {
+    const serial = sourceSheet.getRow(sourceRowIndex).getCell(1).value;
+    if (serial == null || serial === '') {
+      break;
+    }
+
+    const targetRowIndex = getNextDataRow(targetSheet);
+    const sourceRow = sourceSheet.getRow(sourceRowIndex);
+    const row = targetSheet.getRow(targetRowIndex);
+    const rowHeight = sourceRow.height ?? MIN_ROW_HEIGHT;
+
+    row.values = sourceRow.values;
+    row.height = rowHeight;
+
+    sourceRow.eachCell({ includeEmpty: false }, (sourceCell, colNumber) => {
+      const targetCell = row.getCell(colNumber);
+      targetCell.value = sourceCell.value;
+      if (sourceCell.font) {
+        targetCell.font = { ...sourceCell.font };
+      }
+      if (sourceCell.alignment) {
+        targetCell.alignment = { ...sourceCell.alignment };
+      }
+      if (sourceCell.border) {
+        targetCell.border = sourceCell.border;
+      }
+      if (sourceCell.fill) {
+        targetCell.fill = sourceCell.fill;
+      }
+    });
+
+    if (resolveThumbnail) {
+      const capturePath = capturePathFromCellValue(sourceRow.getCell(CAPTURE_COLUMN).value);
+      if (capturePath) {
+        const image = await resolveThumbnail(capturePath);
+        if (image) {
+          const thumbnailColumnWidth = COLUMNS[THUMBNAIL_COLUMN - 1].width;
+          const thumbnailRowHeight = rowHeightForContainedImage(
+            image.width,
+            image.height,
+            thumbnailColumnWidth
+          );
+          const finalRowHeight = Math.max(rowHeight, thumbnailRowHeight);
+          row.height = finalRowHeight;
+          await embedThumbnailInRow(
+            targetWorkbook,
+            targetSheet,
+            targetRowIndex,
+            finalRowHeight,
+            image
+          );
+        }
+      }
+    }
+  }
+}
+
+/** 여러 shard 워크북을 연번 순서대로 하나의 범죄일람표 워크북으로 합친다. */
+export async function mergeCrimeListWorkbooks(
+  sourceWorkbooks: ExcelJS.Workbook[],
+  resolveThumbnail?: (captureRelativePath: string) => Promise<HTMLImageElement | null>
+): Promise<ExcelJS.Workbook> {
+  const { workbook, sheet } = createCrimeListWorkbook();
+  for (const source of sourceWorkbooks) {
+    await appendCrimeListSheetRows(source, workbook, sheet, resolveThumbnail);
+  }
+  return workbook;
 }
