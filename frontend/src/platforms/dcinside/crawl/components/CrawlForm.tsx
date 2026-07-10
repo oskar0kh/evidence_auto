@@ -223,7 +223,7 @@ export default function CrawlForm({
             disabled={loading || saving || !manualExportAvailable}
             aria-busy={saving}
           >
-            <span className="btn-label">범죄일람표, 캡처이미지 수동 저장</span>
+            <span className="btn-label">범죄일람표 수동 저장</span>
             {saving && <span className="btn-spinner" aria-hidden="true" />}
           </button>
           <button
