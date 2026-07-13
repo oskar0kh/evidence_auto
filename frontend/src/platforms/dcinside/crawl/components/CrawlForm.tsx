@@ -13,6 +13,7 @@ interface CrawlFormProps {
   onSearchInputChange: (value: string) => void;
   searchGalleryName: string;
   onGalleryNameChange: (value: string) => void;
+  onGalleryClear: () => void;
   selectedGallery: GalleryCandidate | null;
   galleryCandidates: GalleryCandidate[];
   galleryPickerOpen: boolean;
@@ -45,6 +46,7 @@ export default function CrawlForm({
   onSearchInputChange,
   searchGalleryName,
   onGalleryNameChange,
+  onGalleryClear,
   selectedGallery,
   galleryCandidates,
   galleryPickerOpen,
@@ -115,6 +117,18 @@ export default function CrawlForm({
             >
               {galleryResolving ? '찾는 중…' : '찾기'}
             </button>
+            {selectedGallery && (
+              <button
+                type="button"
+                className="btn gallery-clear-btn"
+                onClick={onGalleryClear}
+                disabled={loading || galleryResolving}
+                aria-label="갤러리 지정 해제"
+                title="갤러리 지정 해제"
+              >
+                ✕
+              </button>
+            )}
           </div>
           <p className="gallery-selected-hint">
             {selectedGallery ? `선택됨: ${formatGalleryLabel(selectedGallery)}` : ''}

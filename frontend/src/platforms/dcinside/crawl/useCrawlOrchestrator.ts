@@ -719,6 +719,13 @@ export function useCrawlOrchestrator() {
     setGalleryCandidates([]);
   };
 
+  const handleGalleryClear = () => {
+    setSearchGalleryName('');
+    setSelectedGallery(null);
+    setGalleryPickerOpen(false);
+    setGalleryCandidates([]);
+  };
+
   const handleGalleryLookup = async () => {
     const galleryName = searchGalleryName.trim();
     if (!galleryName) {
@@ -852,6 +859,7 @@ export function useCrawlOrchestrator() {
     handlePickDirectory,
     handleCrawl,
     handleGalleryNameChange,
+    handleGalleryClear,
     handleGalleryLookup,
     handleSearchCrawl,
     handleGalleryPickerCancel,

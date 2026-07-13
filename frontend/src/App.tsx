@@ -22,6 +22,7 @@ export default function App() {
           onSearchInputChange={crawl.setSearchInput}
           searchGalleryName={crawl.searchGalleryName}
           onGalleryNameChange={crawl.handleGalleryNameChange}
+          onGalleryClear={crawl.handleGalleryClear}
           selectedGallery={crawl.selectedGallery}
           galleryCandidates={crawl.galleryCandidates}
           galleryPickerOpen={crawl.galleryPickerOpen}
