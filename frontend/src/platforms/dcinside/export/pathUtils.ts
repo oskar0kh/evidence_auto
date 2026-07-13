@@ -22,6 +22,12 @@ export function sanitizeFilenamePart(value: string): string {
   return value.replace(/[\\/:*?"<>|]/g, '_').trim() || '미상';
 }
 
+function formatGalleryFilenamePart(galleryName: string): string {
+  const trimmed = galleryName.trim();
+  const withSuffix = trimmed.endsWith('갤러리') ? trimmed : `${trimmed} 갤러리`;
+  return sanitizeFilenamePart(withSuffix);
+}
+
 export const DCINSIDE_COMMUNITY_NAME = '디시인사이드';
 
 export interface ExcelFilenameOptions {
@@ -35,7 +41,7 @@ export interface ExcelFilenameOptions {
 /**
  * 엑셀 파일명 규칙:
  * - 검색어 O, 갤러리 미지정: 범죄일람표_{검색어}_{커뮤니티명}_{YYYYMMDD_HHMM}.xlsx
- * - 검색어 O, 갤러리 지정: 범죄일람표_{검색어}_{커뮤니티명}_{갤러리명}_{YYYYMMDD_HHMM}.xlsx
+ * - 검색어 O, 갤러리 지정: 범죄일람표_{검색어}_{커뮤니티명}_{갤러리명}갤러리_{YYYYMMDD_HHMM}.xlsx
  * - 검색어 X (URL 직접입력): 범죄일람표_{커뮤니티명}_{YYYYMMDD_HHMM}.xlsx
  */
 export function buildExcelFilename(options: ExcelFilenameOptions): string {
@@ -54,7 +60,7 @@ export function buildExcelFilename(options: ExcelFilenameOptions): string {
   }
   parts.push(sanitizeFilenamePart(communityName));
   if (galleryName?.trim()) {
-    parts.push(sanitizeFilenamePart(galleryName));
+    parts.push(formatGalleryFilenamePart(galleryName));
   }
   return `${parts.join('_')}${suffix}.xlsx`;
 }
