@@ -1,6 +1,6 @@
 # 범죄일람표 크롤러
 
-디시인사이드 게시글 URL을 입력하면 게시글·댓글 정보를 파싱하고 **전체 페이지 스크린샷**을 자동 캡처한 뒤 **범죄일람표** 엑셀 파일로 다운로드하는 웹 애플리케이션입니다.
+디시인사이드·인스타그램 게시물 URL 또는 검색어를 입력하면 게시글·댓글 정보를 파싱하고 **스크린샷**을 자동 캡처한 뒤 **범죄일람표** 엑셀 파일로 저장하는 웹 애플리케이션입니다.
 
 ## 구조
 
@@ -166,6 +166,30 @@ npm run dev
 - **JSON-LD** (`application/ld+json`): URL, 제목, 본문, 게시일자, 조회수, 댓글 수
 - **HTML** (`gall_writer`): 닉네임, IP, 식별번호
 - **댓글 API** (`POST /board/comment/`): 댓글 목록 (페이지네이션 포함)
+
+## 인스타그램
+
+- UI 상단 탭에서 **인스타그램** 선택
+- **URL 직접입력**: `instagram.com/p/`, `/reel/`, `/tv/` URL 크롤링
+- **검색어**: Instagram 탐색(Explore) 검색으로 URL 수집 후 크롤링 (로그인 세션 권장)
+- 엑셀 컬럼: `작성 형태 (게시글/댓글)`, 닉네임=Instagram ID, 댓글란=ID 기반 (IP 없음)
+- 검색어 매칭: 캡션·댓글 텍스트 + **이미지 OCR** (Tesseract `kor+eng`)
+- 캡처: 게시글 전체 레이아웃 / 매칭 댓글 노란 하이라이트
+
+### 인스타그램 설정 (`application.properties`)
+
+```properties
+evidence.instagram.session-cookies=sessionid=...;csrftoken=...
+evidence.instagram.doc-id.post=8845758582119845
+evidence.instagram.doc-id.comments=26248690958161038
+evidence.instagram.doc-id.child-comments=26914912424764761
+```
+
+OCR 사용 시 시스템에 Tesseract와 한글 데이터가 필요합니다:
+
+```bash
+sudo apt install -y tesseract-ocr tesseract-ocr-kor
+```
 
 ## 향후 확장
 

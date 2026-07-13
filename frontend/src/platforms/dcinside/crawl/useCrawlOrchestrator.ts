@@ -6,7 +6,27 @@ import {
   finalizeCrawlPersistSession,
   type CrawlPersistSession,
 } from '../export/persistResults';
+import { formatTimestamp } from '../export/pathUtils';
 import { CRAWL_BATCH_SIZE, chunkArray } from './constants';
+import { crawlInstagramStream, searchCrawlInstagramStream } from '../../instagram/api';
+import {
+  saveInstagramBatchResults,
+  toInstagramUnifiedPreview,
+} from '../../instagram/crawl/crawlHelpers';
+import {
+  finalizeCrawlPersistSession as finalizeInstagramPersistSession,
+  type CrawlPersistSession as InstagramPersistSession,
+} from '../../instagram/export/persistResults';
+import { INSTAGRAM_COMMUNITY_NAME } from '../../instagram/export/pathUtils';
+import {
+  type CommunityId,
+  classifyUrl,
+  getCommunityDefinition,
+  isDcinsideUrl,
+  isInstagramUrl,
+} from '../../../shared/crawl/communities';
+import { resolveCommunityDirectory } from '../../../shared/crawl/communityStorage';
+import type { InstagramPostData } from '../../instagram/types';
 import {
   collectCrawlResponse,
   collectProcessedUrls,
@@ -58,6 +78,10 @@ function resolveCrawlError(e: unknown): string {
 export function useCrawlOrchestrator() {
   const [urlInput, setUrlInput] = useState('');
   const [searchInput, setSearchInput] = useState('');
+  const [selectedCommunities, setSelectedCommunities] = useState<CommunityId[]>([
+    'dcinside',
+    'instagram',
+  ]);
   const [searchGalleryName, setSearchGalleryName] = useState('');
   const [selectedGallery, setSelectedGallery] = useState<GalleryCandidate | null>(null);
   const [galleryCandidates, setGalleryCandidates] = useState<GalleryCandidate[]>([]);
@@ -81,6 +105,9 @@ export function useCrawlOrchestrator() {
   const crawlAbortRef = useRef<AbortController | null>(null);
   const sessionMetricsRef = useRef<CrawlSessionMetrics | null>(null);
   const savedCountRef = useRef(0);
+  const dcinsideSavedCountRef = useRef(0);
+  const instagramSavedCountRef = useRef(0);
+  const crawlStampRef = useRef<string | undefined>(undefined);
   const lastSearchKeywordRef = useRef<string | undefined>(undefined);
   const lastGalleryNameRef = useRef<string | undefined>(undefined);
 
@@ -121,6 +148,53 @@ export function useCrawlOrchestrator() {
     const endSerial = savedCountRef.current;
     const startSerial = endSerial - posts.length + 1;
     setResultsPreview((prev) => appendResultPreviews(prev, posts, startSerial));
+  };
+
+  const appendInstagramPreviews = (posts: InstagramPostData[]) => {
+    if (posts.length === 0) {
+      return;
+    }
+    const endSerial = savedCountRef.current;
+    const startSerial = endSerial - posts.length + 1;
+    const previews = posts.map((post, index) =>
+      toInstagramUnifiedPreview(post, startSerial + index)
+    );
+    setResultsPreview((prev) => [...previews.reverse(), ...prev].slice(0, 10));
+  };
+
+  const toggleCommunity = (id: CommunityId) => {
+    setSelectedCommunities((prev) => {
+      if (prev.includes(id)) {
+        if (prev.length === 1) {
+          return prev;
+        }
+        const next = prev.filter((c) => c !== id);
+        if (id === 'dcinside') {
+          setSearchGalleryName('');
+          setSelectedGallery(null);
+          setGalleryPickerOpen(false);
+          setGalleryCandidates([]);
+        }
+        return next;
+      }
+      return [...prev, id];
+    });
+  };
+
+  const ensureCommunitiesSelected = (): boolean => {
+    if (selectedCommunities.length === 0) {
+      setError('크롤링할 커뮤니티를 하나 이상 선택해 주세요.');
+      return false;
+    }
+    return true;
+  };
+
+  const resolveCommunitySaveDir = async (id: CommunityId) => {
+    if (!saveDirectoryRef.current) {
+      throw new Error('저장 폴더가 선택되지 않았습니다.');
+    }
+    const def = getCommunityDefinition(id);
+    return resolveCommunityDirectory(saveDirectoryRef.current, def.folderName);
   };
 
   const beginCrawlSession = (): AbortSignal => {
@@ -187,25 +261,36 @@ export function useCrawlOrchestrator() {
     clearSearchInput?: boolean;
     clearSearchDates?: boolean;
     clearSearchGallery?: boolean;
+    communitySaveDirectory?: FileSystemDirectoryHandle;
+    sharedStamp?: string;
+    progressLabelPrefix?: string;
+    skipInit?: boolean;
+    isLastCommunity?: boolean;
   }) => {
-    const abortSignal = beginCrawlSession();
-    crawlStartAtRef.current = Date.now();
-    sessionMetricsRef.current = createCrawlSessionMetrics(crawlStartAtRef.current);
+    const abortSignal = options.skipInit
+      ? (crawlAbortRef.current?.signal ?? beginCrawlSession())
+      : beginCrawlSession();
+    if (!options.skipInit) {
+      crawlStartAtRef.current = Date.now();
+      sessionMetricsRef.current = createCrawlSessionMetrics(crawlStartAtRef.current);
 
-    setElapsedMs(0);
-    setHasStartedCrawl(true);
-    setLoading(true);
-    setError(null);
-    setInfoMessage(null);
-    setErrors([]);
+      setElapsedMs(0);
+      setHasStartedCrawl(true);
+      setLoading(true);
+      setError(null);
+      setInfoMessage(null);
+      setErrors([]);
+    }
     setProgress({
       completed: 0,
       total: 0,
-      currentUrl: options.useGallerySearch
-        ? `갤러리 ${options.galleryLabel} 검색·수집 중…`
-        : options.useDateRange
-          ? '기간 내 검색·수집 중…'
-          : '검색·수집 중…',
+      currentUrl: options.progressLabelPrefix
+        ? `[${options.progressLabelPrefix}] 검색·수집 중…`
+        : options.useGallerySearch
+          ? `갤러리 ${options.galleryLabel} 검색·수집 중…`
+          : options.useDateRange
+            ? '기간 내 검색·수집 중…'
+            : '검색·수집 중…',
       stage: 'search',
       successCount: 0,
       failCount: 0,
@@ -226,7 +311,7 @@ export function useCrawlOrchestrator() {
     let crawlLogSession: CrawlLogSession | null = null;
     syncSavedCountRef();
 
-    if (saveDirectoryRef.current) {
+    if (saveDirectoryRef.current && !options.skipInit) {
       crawlLogSession = await beginCrawlLogSession(
         saveDirectoryRef.current,
         options.logContext
@@ -261,6 +346,10 @@ export function useCrawlOrchestrator() {
     };
 
     try {
+      const communityDir =
+        options.communitySaveDirectory ??
+        (saveDirectoryRef.current ? await resolveCommunitySaveDir('dcinside') : null);
+
       const response = await searchCrawlDcinsideStream(
         options.query,
         {
@@ -269,26 +358,34 @@ export function useCrawlOrchestrator() {
           endDate: options.useDateRange ? searchEndDate : undefined,
           galleryId: options.useGallerySearch ? options.galleryId : undefined,
         },
-        savedCountRef.current + 1,
+        dcinsideSavedCountRef.current + 1,
         (event) => {
-          applyProgressUpdate(event);
+          applyProgressUpdate({
+            ...event,
+            currentUrl: options.progressLabelPrefix
+              ? `[${options.progressLabelPrefix}] ${event.currentUrl}`
+              : event.currentUrl,
+          });
         },
         async (post) => {
-          if (!saveDirectoryRef.current) {
+          if (!communityDir) {
             return;
           }
           try {
             const saved = await saveBatchResults(
               persistSession,
               [post],
-              saveDirectoryRef.current,
+              communityDir,
               {
                 keyword: lastSearchKeywordRef.current,
                 galleryName: options.useGallerySearch ? options.galleryName : undefined,
+                stamp: options.sharedStamp ?? crawlStampRef.current,
+                ensureLogDirectory: false,
               }
             );
             persistSession = saved.session;
             bumpSavedCount(saved.postsForExcel.length);
+            dcinsideSavedCountRef.current += saved.postsForExcel.length;
             appendSavedPreviews(saved.postsForExcel);
             totalSavedCount += saved.postsForExcel.length;
             autoSaved = true;
@@ -307,7 +404,9 @@ export function useCrawlOrchestrator() {
         onStreamUrlError
       );
 
-      mergeOperationEvents(sessionMetricsRef.current, response.operationEvents ?? []);
+      if (sessionMetricsRef.current) {
+        mergeOperationEvents(sessionMetricsRef.current, response.operationEvents ?? []);
+      }
 
       const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
       batchTimings = mergeUrlTimings(batchTimings, response.timings ?? []);
@@ -382,33 +481,47 @@ export function useCrawlOrchestrator() {
         batchErrors,
         processedUrls,
       });
-      setError(messages.errorMessage);
-      setInfoMessage(messages.infoMessage);
+      const extraStreamFailures = buildExtraStreamFailures(batchErrors, interruptMessage);
+      const mergedErrors = mergeCrawlFailures(batchErrors, batchTimings, extraStreamFailures);
+
+      if (options.isLastCommunity !== false) {
+        setError(messages.errorMessage);
+        setInfoMessage(messages.infoMessage);
+        setErrors(mergedErrors);
+      } else {
+        setErrors((prev) => [...prev, ...mergedErrors]);
+        if (messages.infoMessage) {
+          setInfoMessage((prev) =>
+            prev ? `${prev} · ${messages.infoMessage}` : messages.infoMessage
+          );
+        }
+      }
 
       const totalMs =
         crawlStartAtRef.current !== null ? Date.now() - crawlStartAtRef.current : 0;
-      if (crawlStartAtRef.current !== null) {
+      if (options.isLastCommunity !== false && crawlStartAtRef.current !== null) {
         setLastCrawlDurationMs(totalMs);
       }
-      const extraStreamFailures = buildExtraStreamFailures(batchErrors, interruptMessage);
-      const mergedErrors = mergeCrawlFailures(batchErrors, batchTimings, extraStreamFailures);
-      setErrors(mergedErrors);
-      await saveCrawlLog(
-        saveDirectoryRef.current,
-        options.logContext,
-        successCount + totalFailCount,
-        successCount,
-        batchErrors,
-        totalMs,
-        batchTimings,
-        extraStreamFailures,
-        sessionMetricsRef.current,
-        crawlLogSession?.handle ?? null
-      );
+      if (options.isLastCommunity !== false) {
+        await saveCrawlLog(
+          saveDirectoryRef.current,
+          options.logContext,
+          successCount + totalFailCount,
+          successCount,
+          batchErrors,
+          totalMs,
+          batchTimings,
+          extraStreamFailures,
+          sessionMetricsRef.current,
+          crawlLogSession?.handle ?? null
+        );
+      }
       sessionMetricsRef.current = null;
-      setLoading(false);
-      setProgress(null);
-      crawlAbortRef.current = null;
+      if (options.isLastCommunity !== false) {
+        setLoading(false);
+        setProgress(null);
+        crawlAbortRef.current = null;
+      }
       if (options.clearSearchInput) {
         setSearchInput('');
       }
@@ -425,6 +538,208 @@ export function useCrawlOrchestrator() {
     }
   };
 
+  const runInstagramSearchCrawl = async (options: {
+    query: string;
+    sharedStamp?: string;
+    skipInit?: boolean;
+    isLastCommunity?: boolean;
+  }) => {
+    const abortSignal = crawlAbortRef.current?.signal ?? beginCrawlSession();
+    if (!options.skipInit) {
+      crawlStartAtRef.current = Date.now();
+      setElapsedMs(0);
+      setHasStartedCrawl(true);
+      setLoading(true);
+      setError(null);
+      setInfoMessage(null);
+      setErrors([]);
+    }
+
+    setProgress({
+      completed: 0,
+      total: 0,
+      currentUrl: `[${INSTAGRAM_COMMUNITY_NAME}] 검색·수집 중…`,
+      stage: 'search',
+      successCount: 0,
+      failCount: 0,
+    });
+
+    let persistSession: InstagramPersistSession | null = null;
+    const batchErrors: CrawlFailureRecord[] = [];
+    let totalSavedCount = 0;
+
+    try {
+      const communityDir = saveDirectoryRef.current
+        ? await resolveCommunitySaveDir('instagram')
+        : null;
+
+      await searchCrawlInstagramStream(options.query, {
+        maxResults: 100,
+        startSerial: instagramSavedCountRef.current + 1,
+        signal: abortSignal,
+        onProgress: (event) => {
+          setProgress((prev) =>
+            mergeCrawlProgressEvent(prev, {
+              ...event,
+              currentUrl: `[${INSTAGRAM_COMMUNITY_NAME}] ${event.currentUrl}`,
+            })
+          );
+        },
+        onUrlResult: async (post) => {
+          if (!communityDir) return;
+          const saved = await saveInstagramBatchResults(persistSession, [post], communityDir, {
+            keyword: options.query,
+            stamp: options.sharedStamp ?? crawlStampRef.current,
+          });
+          persistSession = saved.session;
+          bumpSavedCount(saved.postsForExcel.length);
+          instagramSavedCountRef.current += saved.postsForExcel.length;
+          appendInstagramPreviews(saved.postsForExcel);
+          totalSavedCount += saved.postsForExcel.length;
+        },
+        onUrlError: (err) => {
+          batchErrors.push(err);
+          setErrors((prev) => [...prev, err]);
+        },
+      });
+    } catch (e) {
+      if (!isAbortError(e)) {
+        const message = e instanceof Error ? e.message : '인스타그램 검색 크롤링 실패';
+        batchErrors.push({ url: '(인스타그램 검색)', error: message });
+        setErrors((prev) => [...prev, { url: '(인스타그램 검색)', error: message }]);
+      }
+    } finally {
+      if (persistSession) {
+        try {
+          await finalizeInstagramPersistSession(persistSession);
+        } catch {
+          // ignore
+        }
+      }
+      if (totalSavedCount > 0) {
+        setInfoMessage((prev) =>
+          prev
+            ? `${prev} · 인스타그램 ${totalSavedCount}건 저장`
+            : `인스타그램 ${totalSavedCount}건 저장 완료`
+        );
+      }
+      if (options.isLastCommunity !== false) {
+        setLoading(false);
+        setProgress(null);
+        crawlAbortRef.current = null;
+        if (crawlStartAtRef.current !== null) {
+          setLastCrawlDurationMs(Date.now() - crawlStartAtRef.current);
+        }
+      }
+    }
+  };
+
+  const runInstagramCrawlForUrls = async (
+    urls: string[],
+    options?: {
+      skipInit?: boolean;
+      sharedStamp?: string;
+      isLastCommunity?: boolean;
+      clearUrlInput?: boolean;
+    }
+  ) => {
+    if (!options?.skipInit) {
+      crawlStartAtRef.current = Date.now();
+      setElapsedMs(0);
+      setHasStartedCrawl(true);
+      setLoading(true);
+      setError(null);
+      setInfoMessage(null);
+      setErrors([]);
+    }
+
+    const abortSignal = crawlAbortRef.current?.signal ?? beginCrawlSession();
+    let persistSession: InstagramPersistSession | null = null;
+    const batchErrors: CrawlFailureRecord[] = [];
+    let totalSavedCount = 0;
+
+    setProgress({
+      completed: 0,
+      total: urls.length,
+      currentUrl: `[${INSTAGRAM_COMMUNITY_NAME}] ${urls[0] ?? ''}`,
+      stage: 'fetch',
+      successCount: 0,
+      failCount: 0,
+    });
+
+    try {
+      const communityDir = saveDirectoryRef.current
+        ? await resolveCommunitySaveDir('instagram')
+        : null;
+      const batches = chunkArray(urls, CRAWL_BATCH_SIZE);
+
+      for (const batch of batches) {
+        await crawlInstagramStream(batch, {
+          startSerial: instagramSavedCountRef.current + 1,
+          signal: abortSignal,
+          onProgress: (event) => {
+            setProgress((prev) =>
+              mergeCrawlProgressEvent(prev, {
+                ...event,
+                currentUrl: `[${INSTAGRAM_COMMUNITY_NAME}] ${event.currentUrl}`,
+              })
+            );
+          },
+          onUrlResult: async (post) => {
+            if (!communityDir) return;
+            const saved = await saveInstagramBatchResults(persistSession, [post], communityDir, {
+              stamp: options?.sharedStamp ?? crawlStampRef.current,
+            });
+            persistSession = saved.session;
+            bumpSavedCount(saved.postsForExcel.length);
+            instagramSavedCountRef.current += saved.postsForExcel.length;
+            appendInstagramPreviews(saved.postsForExcel);
+            totalSavedCount += saved.postsForExcel.length;
+          },
+          onUrlError: (err) => {
+            batchErrors.push(err);
+            setErrors((prev) => [...prev, err]);
+          },
+        });
+      }
+
+      if (batchErrors.length > 0 && totalSavedCount === 0) {
+        setError('인스타그램 URL 처리에 모두 실패했습니다.');
+      } else if (totalSavedCount > 0) {
+        setInfoMessage((prev) =>
+          prev
+            ? `${prev} · 인스타그램 ${totalSavedCount}건 저장`
+            : `인스타그램 ${totalSavedCount}건 저장 완료`
+        );
+      }
+    } catch (e) {
+      if (isAbortError(e)) {
+        setError('크롤링이 취소됐습니다.');
+      } else {
+        setError(e instanceof Error ? e.message : '인스타그램 크롤링 중 오류가 발생했습니다.');
+      }
+    } finally {
+      if (persistSession) {
+        try {
+          await finalizeInstagramPersistSession(persistSession);
+        } catch {
+          // ignore
+        }
+      }
+      if (options?.isLastCommunity !== false) {
+        setLoading(false);
+        setProgress(null);
+        crawlAbortRef.current = null;
+        if (crawlStartAtRef.current !== null) {
+          setLastCrawlDurationMs(Date.now() - crawlStartAtRef.current);
+        }
+      }
+      if (options?.clearUrlInput) {
+        setUrlInput('');
+      }
+    }
+  };
+
   const runCrawlForUrls = async (
     urls: string[],
     options?: {
@@ -435,6 +750,10 @@ export function useCrawlOrchestrator() {
       skipInit?: boolean;
       logContext?: CrawlLogContext;
       galleryId?: string;
+      communitySaveDirectory?: FileSystemDirectoryHandle;
+      sharedStamp?: string;
+      progressLabelPrefix?: string;
+      isLastCommunity?: boolean;
     }
   ) => {
     const crawlUrls = filterUrlsByGalleryId(urls, options?.galleryId);
@@ -480,7 +799,7 @@ export function useCrawlOrchestrator() {
     };
 
     const urlBatches = chunkArray(crawlUrls, CRAWL_BATCH_SIZE);
-    let nextSerial = savedCountRef.current + 1;
+    let nextSerial = dcinsideSavedCountRef.current + 1;
     let globalCompletedOffset = 0;
     syncSavedCountRef();
 
@@ -520,11 +839,19 @@ export function useCrawlOrchestrator() {
     setProgress({
       completed: 0,
       total: crawlUrls.length,
-      currentUrl: crawlUrls[0] ?? '',
+      currentUrl: options?.progressLabelPrefix
+        ? `[${options.progressLabelPrefix}] ${crawlUrls[0] ?? ''}`
+        : crawlUrls[0] ?? '',
       stage: 'text-crawl',
       successCount: 0,
       failCount: 0,
     });
+
+    const communityDir =
+      options?.communitySaveDirectory ??
+      (saveDirectoryRef.current
+        ? await resolveCommunitySaveDir('dcinside')
+        : null);
 
     try {
       for (let batchIndex = 0; batchIndex < urlBatches.length; batchIndex++) {
@@ -541,6 +868,9 @@ export function useCrawlOrchestrator() {
               total: crawlUrls.length,
               successCount: successCount + event.successCount,
               failCount: totalFailCount + event.failCount,
+              currentUrl: options?.progressLabelPrefix
+                ? `[${options.progressLabelPrefix}] ${event.currentUrl}`
+                : event.currentUrl,
             }));
           },
           (post) => {
@@ -553,7 +883,9 @@ export function useCrawlOrchestrator() {
           onStreamUrlError
         );
 
+        if (sessionMetricsRef.current) {
         mergeOperationEvents(sessionMetricsRef.current, response.operationEvents ?? []);
+      }
 
         const batchSuccess = collectCrawlResponse(response, batchErrors, batchTimings);
         batchTimings = mergeUrlTimings(batchTimings, response.timings ?? []);
@@ -566,18 +898,22 @@ export function useCrawlOrchestrator() {
         }
         interruptMessage = response.interruptMessage;
 
-        if (batchResults.length > 0 && saveDirectoryRef.current) {
+        if (batchResults.length > 0 && communityDir) {
           try {
             const saved = await saveBatchResults(
               persistSession,
               batchResults,
-              saveDirectoryRef.current,
+              communityDir,
               {
                 keyword: lastSearchKeywordRef.current,
+                galleryName: lastGalleryNameRef.current,
+                stamp: options?.sharedStamp ?? crawlStampRef.current,
+                ensureLogDirectory: false,
               }
             );
             persistSession = saved.session;
             bumpSavedCount(saved.postsForExcel.length);
+            dcinsideSavedCountRef.current += saved.postsForExcel.length;
             appendSavedPreviews(saved.postsForExcel);
             totalSavedCount += saved.postsForExcel.length;
             autoSaved = true;
@@ -672,9 +1008,11 @@ export function useCrawlOrchestrator() {
         crawlLogSession?.handle ?? null
       );
       sessionMetricsRef.current = null;
-      setLoading(false);
-      setProgress(null);
-      crawlAbortRef.current = null;
+      if (options?.isLastCommunity !== false) {
+        setLoading(false);
+        setProgress(null);
+        crawlAbortRef.current = null;
+      }
       if (options?.clearUrlInput) {
         setUrlInput('');
       }
@@ -697,19 +1035,78 @@ export function useCrawlOrchestrator() {
   const handleCrawl = async () => {
     const urls = parseUrls(urlInput);
     if (urls.length === 0) {
-      setError('디시인사이드 게시글 URL을 입력해 주세요.');
+      setError('게시글 URL을 입력해 주세요.');
       return;
     }
-    if (!ensureSaveDirectorySelected()) {
+    if (!ensureSaveDirectorySelected() || !ensureCommunitiesSelected()) {
       return;
     }
 
+    const dcUrls = urls.filter(isDcinsideUrl);
+    const igUrls = urls.filter(isInstagramUrl);
+    const unknownUrls = urls.filter((url) => classifyUrl(url) === null);
+
+    const runDc = selectedCommunities.includes('dcinside') && dcUrls.length > 0;
+    const runIg = selectedCommunities.includes('instagram') && igUrls.length > 0;
+
+    if (!runDc && !runIg) {
+      if (unknownUrls.length > 0) {
+        setError('지원하지 않는 URL입니다. 디시인사이드 또는 인스타그램 게시물 URL을 입력해 주세요.');
+      } else if (selectedCommunities.includes('dcinside') && !selectedCommunities.includes('instagram')) {
+        setError('선택한 커뮤니티(디시인사이드)에 해당하는 URL이 없습니다.');
+      } else if (selectedCommunities.includes('instagram') && !selectedCommunities.includes('dcinside')) {
+        setError('선택한 커뮤니티(인스타그램)에 해당하는 URL이 없습니다.');
+      } else {
+        setError('선택한 커뮤니티에 해당하는 URL이 없습니다.');
+      }
+      return;
+    }
+
+    crawlStampRef.current = formatTimestamp();
     lastSearchKeywordRef.current = undefined;
     lastGalleryNameRef.current = undefined;
-    await runCrawlForUrls(urls, {
-      clearUrlInput: true,
-      logContext: { inputMode: 'URL 직접입력' },
-    });
+
+    const communitiesToRun: CommunityId[] = [];
+    if (runDc) communitiesToRun.push('dcinside');
+    if (runIg) communitiesToRun.push('instagram');
+
+    beginCrawlSession();
+    crawlStartAtRef.current = Date.now();
+    setHasStartedCrawl(true);
+    setLoading(true);
+    setError(null);
+    setInfoMessage(null);
+    setErrors([]);
+
+    if (unknownUrls.length > 0) {
+      const unknownErrors = unknownUrls.map((url) => ({
+        url,
+        error: '지원하지 않는 URL 형식입니다.',
+      }));
+      setErrors(unknownErrors);
+    }
+
+    for (let i = 0; i < communitiesToRun.length; i++) {
+      const id = communitiesToRun[i];
+      const isLast = i === communitiesToRun.length - 1;
+      if (id === 'dcinside') {
+        await runCrawlForUrls(dcUrls, {
+          skipInit: true,
+          sharedStamp: crawlStampRef.current,
+          progressLabelPrefix: '디시인사이드',
+          isLastCommunity: isLast,
+          clearUrlInput: isLast,
+          logContext: { inputMode: 'URL 직접입력' },
+        });
+      } else {
+        await runInstagramCrawlForUrls(igUrls, {
+          skipInit: true,
+          sharedStamp: crawlStampRef.current,
+          isLastCommunity: isLast,
+          clearUrlInput: isLast,
+        });
+      }
+    }
   };
 
   const handleGalleryNameChange = (value: string) => {
@@ -768,12 +1165,12 @@ export function useCrawlOrchestrator() {
       setError('검색 기간의 시작일은 종료일보다 이후일 수 없습니다.');
       return;
     }
-    if (!ensureSaveDirectorySelected()) {
+    if (!ensureSaveDirectorySelected() || !ensureCommunitiesSelected()) {
       return;
     }
 
     const galleryName = searchGalleryName.trim();
-    if (galleryName && !selectedGallery) {
+    if (selectedCommunities.includes('dcinside') && galleryName && !selectedGallery) {
       setError('갤러리 찾기 버튼으로 갤러리를 선택해 주세요.');
       return;
     }
@@ -811,23 +1208,46 @@ export function useCrawlOrchestrator() {
 
     lastSearchKeywordRef.current = query;
     lastGalleryNameRef.current = useGallerySearch ? galleryName : undefined;
-    await runSearchCrawl({
-      query,
-      useDateRange,
-      galleryId,
-      galleryLabel,
-      galleryName,
-      useGallerySearch,
-      logContext: {
-        keyword: query,
-        searchDateRange: useDateRange ? `${searchStartDate}~${searchEndDate}` : undefined,
-        galleryName: useGallerySearch ? galleryLabel : undefined,
-        inputMode,
-      },
-      clearSearchInput: true,
-      clearSearchDates: true,
-      clearSearchGallery: true,
-    });
+    crawlStampRef.current = formatTimestamp();
+
+    const searchCommunities = selectedCommunities.filter(
+      (id) => id === 'instagram' || id === 'dcinside'
+    );
+
+    for (let i = 0; i < searchCommunities.length; i++) {
+      const id = searchCommunities[i];
+      const isLast = i === searchCommunities.length - 1;
+      if (id === 'dcinside') {
+        await runSearchCrawl({
+          query,
+          useDateRange,
+          galleryId,
+          galleryLabel,
+          galleryName,
+          useGallerySearch,
+          logContext: {
+            keyword: query,
+            searchDateRange: useDateRange ? `${searchStartDate}~${searchEndDate}` : undefined,
+            galleryName: useGallerySearch ? galleryLabel : undefined,
+            inputMode,
+          },
+          clearSearchInput: isLast,
+          clearSearchDates: isLast,
+          clearSearchGallery: isLast,
+          sharedStamp: crawlStampRef.current,
+          progressLabelPrefix: '디시인사이드',
+          skipInit: i > 0,
+          isLastCommunity: isLast,
+        });
+      } else {
+        await runInstagramSearchCrawl({
+          query,
+          sharedStamp: crawlStampRef.current,
+          skipInit: i > 0,
+          isLastCommunity: isLast,
+        });
+      }
+    }
   };
 
   return {
@@ -835,6 +1255,8 @@ export function useCrawlOrchestrator() {
     setUrlInput,
     searchInput,
     setSearchInput,
+    selectedCommunities,
+    toggleCommunity,
     searchGalleryName,
     selectedGallery,
     galleryCandidates,

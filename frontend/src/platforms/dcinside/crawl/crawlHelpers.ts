@@ -38,6 +38,7 @@ export interface SavedResultPreview {
   viewCount: number;
   commentCount: number;
   captureFilePath: string;
+  community?: string;
 }
 
 export function toResultPreview(post: DcinsidePostData, serial: number): SavedResultPreview {
@@ -51,6 +52,7 @@ export function toResultPreview(post: DcinsidePostData, serial: number): SavedRe
     viewCount: post.viewCount,
     commentCount: post.commentCount,
     captureFilePath: post.captureFilePath,
+    community: '디시인사이드',
   };
 }
 

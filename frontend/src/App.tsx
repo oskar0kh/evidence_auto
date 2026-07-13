@@ -16,6 +16,8 @@ export default function App() {
 
       <main className="app-main">
         <CrawlForm
+          selectedCommunities={crawl.selectedCommunities}
+          onCommunityToggle={crawl.toggleCommunity}
           urlInput={crawl.urlInput}
           onUrlInputChange={crawl.setUrlInput}
           searchInput={crawl.searchInput}

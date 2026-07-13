@@ -32,7 +32,11 @@ export default function ResultsSection({ savedCount, resultsPreview }: ResultsSe
             </h3>
             <dl>
               <div>
-                <dt>갤러리명</dt>
+                <dt>커뮤니티</dt>
+                <dd>{post.community?.trim() || '디시인사이드'}</dd>
+              </div>
+              <div>
+                <dt>{post.community === '인스타그램' ? '작성 형태' : '갤러리명'}</dt>
                 <dd>{post.galleryName?.trim() || '-'}</dd>
               </div>
               <div>
