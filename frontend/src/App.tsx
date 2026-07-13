@@ -34,6 +34,7 @@ export default function App() {
           onPickDirectory={() => void crawl.handlePickDirectory()}
           loading={crawl.loading}
           savedResultsCount={crawl.savedCount}
+          showSavedCount={crawl.hasStartedCrawl}
           lastCrawlDurationMs={crawl.lastCrawlDurationMs}
           infoMessage={crawl.infoMessage}
           error={crawl.error}

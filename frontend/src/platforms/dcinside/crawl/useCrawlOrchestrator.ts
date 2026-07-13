@@ -72,6 +72,7 @@ export function useCrawlOrchestrator() {
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [savedCount, setSavedCount] = useState(0);
+  const [hasStartedCrawl, setHasStartedCrawl] = useState(false);
   const [resultsPreview, setResultsPreview] = useState<SavedResultPreview[]>([]);
   const [errors, setErrors] = useState<CrawlFailureRecord[]>([]);
   const [elapsedMs, setElapsedMs] = useState(0);
@@ -192,6 +193,7 @@ export function useCrawlOrchestrator() {
     sessionMetricsRef.current = createCrawlSessionMetrics(crawlStartAtRef.current);
 
     setElapsedMs(0);
+    setHasStartedCrawl(true);
     setLoading(true);
     setError(null);
     setInfoMessage(null);
@@ -447,6 +449,7 @@ export function useCrawlOrchestrator() {
       crawlStartAtRef.current = Date.now();
       sessionMetricsRef.current = createCrawlSessionMetrics(crawlStartAtRef.current);
       setElapsedMs(0);
+      setHasStartedCrawl(true);
       setLoading(true);
       setError(null);
       setInfoMessage(null);
@@ -840,6 +843,7 @@ export function useCrawlOrchestrator() {
     error,
     infoMessage,
     savedCount,
+    hasStartedCrawl,
     resultsPreview,
     errors,
     elapsedMs,

@@ -25,6 +25,7 @@ interface CrawlFormProps {
   onPickDirectory: () => void;
   loading: boolean;
   savedResultsCount: number;
+  showSavedCount: boolean;
   lastCrawlDurationMs: number | null;
   infoMessage: string | null;
   error: string | null;
@@ -56,6 +57,7 @@ export default function CrawlForm({
   onPickDirectory,
   loading,
   savedResultsCount,
+  showSavedCount,
   lastCrawlDurationMs,
   infoMessage,
   error,
@@ -221,7 +223,9 @@ export default function CrawlForm({
             ✕
           </button>
         </div>
-        <span className="saved-count">현재까지 저장된 링크 개수: {savedResultsCount}</span>
+        {showSavedCount && (
+          <span className="saved-count">현재까지 저장된 링크 개수: {savedResultsCount}</span>
+        )}
       </div>
 
       {lastCrawlDurationMs !== null && !loading && (
