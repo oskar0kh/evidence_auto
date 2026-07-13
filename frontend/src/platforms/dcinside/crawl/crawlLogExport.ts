@@ -1,40 +1,36 @@
-import ExcelJS from 'exceljs';
-import {
-  CRAWL_LOG_HEADER_FILL,
-  EXCEL_HEADER_FONT,
-  sanitizeExcelText,
-} from '../../../shared/lib/excelUtils';
+import { sanitizeExcelText } from '../../../shared/lib/excelUtils';
 import { formatLogDuration } from '../../../shared/lib/formatDuration';
 import { getOrCreateSubdirectory, tryReadFileFromDirectory, writeArrayBufferToDirectory } from '../../../shared/lib/localFileStorage';
 import type { CrawlFailureRecord, CrawlLogEntry, UrlTiming } from './types';
 
 export const CRAWL_LOG_DIR = 'log';
-const SHEET_NAME = 'crawling_log';
 
 const COLUMNS = [
-  { header: '실행 일시', key: 'executedAt', width: 20 },
-  { header: '검색어', key: 'keyword', width: 24 },
-  { header: '검색 기간', key: 'searchDateRange', width: 22 },
-  { header: '갤러리명', key: 'galleryName', width: 24 },
-  { header: '수집 방식', key: 'inputMode', width: 14 },
-  { header: '시도 글 개수', key: 'attemptedCount', width: 12 },
-  { header: '성공 글 개수', key: 'successCount', width: 12 },
-  { header: '실패 글 개수', key: 'failCount', width: 12 },
-  { header: '성공률(%)', key: 'successRate', width: 10 },
-  { header: '실패 사유', key: 'failureReasons', width: 60 },
-  { header: '총 소요 시간', key: 'totalMs', width: 22 },
-  { header: '텍스트 수집', key: 'textCrawlMs', width: 22 },
-  { header: '페이지 접속', key: 'pageNavigateMs', width: 22 },
-  { header: '본문 대기', key: 'waitContentMs', width: 22 },
-  { header: '댓글 대기', key: 'waitCommentsMs', width: 22 },
-  { header: '이미지 캡처', key: 'captureImagesMs', width: 22 },
-  { header: '스크린샷 합계', key: 'screenshotMs', width: 22 },
-  { header: '평균 글당 소요', key: 'avgPerPostMs', width: 22 },
-  { header: '구간별 상세', key: 'stepDetails', width: 80 },
-  { header: '운영 이벤트', key: 'operationLog', width: 60 },
-  { header: 'URL 재시도', key: 'urlRetrySummary', width: 60 },
-  { header: '보호/상태 이벤트', key: 'healthSummary', width: 60 },
+  { header: '실행 일시', key: 'executedAt' },
+  { header: '검색어', key: 'keyword' },
+  { header: '검색 기간', key: 'searchDateRange' },
+  { header: '갤러리명', key: 'galleryName' },
+  { header: '수집 방식', key: 'inputMode' },
+  { header: '시도 글 개수', key: 'attemptedCount' },
+  { header: '성공 글 개수', key: 'successCount' },
+  { header: '실패 글 개수', key: 'failCount' },
+  { header: '성공률(%)', key: 'successRate' },
+  { header: '실패 사유', key: 'failureReasons' },
+  { header: '총 소요 시간', key: 'totalMs' },
+  { header: '텍스트 수집', key: 'textCrawlMs' },
+  { header: '페이지 접속', key: 'pageNavigateMs' },
+  { header: '본문 대기', key: 'waitContentMs' },
+  { header: '댓글 대기', key: 'waitCommentsMs' },
+  { header: '이미지 캡처', key: 'captureImagesMs' },
+  { header: '스크린샷 합계', key: 'screenshotMs' },
+  { header: '평균 글당 소요', key: 'avgPerPostMs' },
+  { header: '구간별 상세', key: 'stepDetails' },
+  { header: '운영 이벤트', key: 'operationLog' },
+  { header: 'URL 재시도', key: 'urlRetrySummary' },
+  { header: '보호/상태 이벤트', key: 'healthSummary' },
 ] as const;
+
+const ENTRY_MARKER_PATTERN = /^=== 크롤링 기록 #(\d+) ===$/;
 
 const STEP_NAME_LABELS: Record<string, string> = {
   'apply-tracking-blocker': '광고/트래킹 차단',
@@ -232,48 +228,170 @@ function buildRowValues(entry: CrawlLogEntry): Record<string, string | number> {
   };
 }
 
-function ensureHeaderRow(sheet: ExcelJS.Worksheet): void {
-  sheet.columns = COLUMNS.map((column) => ({
-    key: column.key,
-    width: column.width,
-  }));
+function formatFieldLine(index: number, header: string, value: string | number): string {
+  const label = `${index + 1}. ${header}:`;
+  const text = String(value ?? '');
 
-  const headerRow = sheet.getRow(1);
-  COLUMNS.forEach((column, index) => {
-    headerRow.getCell(index + 1).value = column.header;
-  });
-  headerRow.font = EXCEL_HEADER_FONT;
-  headerRow.fill = CRAWL_LOG_HEADER_FILL;
-  headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
-  headerRow.height = 22;
-  sheet.views = [{ state: 'frozen', ySplit: 1 }];
-}
-
-async function loadOrCreateWorkbook(
-  directory: FileSystemDirectoryHandle,
-  filename: string
-): Promise<{ workbook: ExcelJS.Workbook; sheet: ExcelJS.Worksheet }> {
-  const workbook = new ExcelJS.Workbook();
-  const existing = await tryReadFileFromDirectory(directory, filename);
-
-  if (existing) {
-    await workbook.xlsx.load(existing);
-    const sheet = workbook.getWorksheet(SHEET_NAME) ?? workbook.worksheets[0];
-    if (!sheet) {
-      throw new Error('기존 크롤링 로그 파일을 읽을 수 없습니다.');
-    }
-    ensureHeaderRow(sheet);
-    return { workbook, sheet };
+  if (!text.includes('\n')) {
+    return `${label} ${text}`;
   }
 
-  const sheet = workbook.addWorksheet(SHEET_NAME);
-  ensureHeaderRow(sheet);
-  return { workbook, sheet };
+  const [firstLine, ...restLines] = text.split('\n');
+  const lines = [`${label} ${firstLine}`];
+  for (const line of restLines) {
+    lines.push(`    ${line}`);
+  }
+  return lines.join('\n');
+}
+
+function formatEntryBlock(entryIndex: number, entry: CrawlLogEntry): string {
+  const rowValues = buildRowValues(entry);
+  const lines = [`=== 크롤링 기록 #${entryIndex} ===`];
+
+  COLUMNS.forEach((column, index) => {
+    lines.push(formatFieldLine(index, column.header, rowValues[column.key]));
+  });
+
+  return lines.join('\n');
+}
+
+function decodeUtf8(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  const hasBom =
+    bytes.length >= 3 && bytes[0] === 0xef && bytes[1] === 0xbb && bytes[2] === 0xbf;
+  const offset = hasBom ? 3 : 0;
+  return new TextDecoder('utf-8').decode(bytes.slice(offset));
+}
+
+function encodeUtf8WithBom(text: string): ArrayBuffer {
+  const encoded = new TextEncoder().encode(text);
+  const bom = new Uint8Array([0xef, 0xbb, 0xbf]);
+  const combined = new Uint8Array(bom.length + encoded.length);
+  combined.set(bom);
+  combined.set(encoded, bom.length);
+  return combined.buffer;
+}
+
+async function tryReadTextFromDirectory(
+  directory: FileSystemDirectoryHandle,
+  filename: string
+): Promise<string | null> {
+  const existing = await tryReadFileFromDirectory(directory, filename);
+  if (!existing) {
+    return null;
+  }
+  return decodeUtf8(existing);
+}
+
+async function writeTextToDirectory(
+  directory: FileSystemDirectoryHandle,
+  filename: string,
+  text: string
+): Promise<void> {
+  await writeArrayBufferToDirectory(directory, filename, encodeUtf8WithBom(text));
+}
+
+interface ParsedLogFile {
+  preamble: string;
+  entryIndices: number[];
+}
+
+function parseLogFile(content: string): ParsedLogFile {
+  const lines = content.split('\n');
+  const entryIndices: number[] = [];
+  let firstEntryLine = -1;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const match = lines[index].match(ENTRY_MARKER_PATTERN);
+    if (match) {
+      if (firstEntryLine === -1) {
+        firstEntryLine = index;
+      }
+      entryIndices.push(Number(match[1]));
+    }
+  }
+
+  const preamble =
+    firstEntryLine === -1 ? content.trimEnd() : lines.slice(0, firstEntryLine).join('\n').trimEnd();
+
+  return { preamble, entryIndices };
+}
+
+function buildLogPreamble(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, '0');
+  const dateLabel = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  return `[크롤링 로그 ${dateLabel}]`;
+}
+
+function rebuildLogContent(
+  preamble: string,
+  entryBlocks: string[]
+): string {
+  const parts = [preamble, ...entryBlocks].filter((part) => part.length > 0);
+  return `${parts.join('\n\n')}\n`;
+}
+
+async function loadLogEntryBlocks(
+  directory: FileSystemDirectoryHandle,
+  filename: string,
+  date: Date
+): Promise<{ preamble: string; entryBlocks: Map<number, string> }> {
+  const existing = await tryReadTextFromDirectory(directory, filename);
+  if (!existing?.trim()) {
+    return {
+      preamble: buildLogPreamble(date),
+      entryBlocks: new Map<number, string>(),
+    };
+  }
+
+  const { preamble, entryIndices } = parseLogFile(existing);
+  const entryBlocks = new Map<number, string>();
+  const markerRegex = /^=== 크롤링 기록 #(\d+) ===$/gm;
+  const matches = [...existing.matchAll(markerRegex)];
+
+  for (let index = 0; index < matches.length; index += 1) {
+    const match = matches[index];
+    const entryIndex = Number(match[1]);
+    const start = match.index ?? 0;
+    const end = index + 1 < matches.length ? (matches[index + 1].index ?? existing.length) : existing.length;
+    entryBlocks.set(entryIndex, existing.slice(start, end).trimEnd());
+  }
+
+  if (entryIndices.length === 0) {
+    return {
+      preamble: existing.trimEnd(),
+      entryBlocks,
+    };
+  }
+
+  return {
+    preamble: preamble || buildLogPreamble(date),
+    entryBlocks,
+  };
+}
+
+function getNextEntryIndex(entryBlocks: Map<number, string>): number {
+  if (entryBlocks.size === 0) {
+    return 1;
+  }
+  return Math.max(...entryBlocks.keys()) + 1;
+}
+
+async function persistLogEntries(
+  directory: FileSystemDirectoryHandle,
+  filename: string,
+  preamble: string,
+  entryBlocks: Map<number, string>
+): Promise<void> {
+  const sortedBlocks = [...entryBlocks.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, block]) => block);
+  await writeTextToDirectory(directory, filename, rebuildLogContent(preamble, sortedBlocks));
 }
 
 export function buildDailyCrawlLogFilename(date = new Date()): string {
   const pad = (value: number) => String(value).padStart(2, '0');
-  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_log.xlsx`;
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}_log.txt`;
 }
 
 export async function getOrCreateLogDirectory(
@@ -301,24 +419,6 @@ function enqueueLogFileWrite(filename: string, task: () => Promise<void>): Promi
   return next;
 }
 
-function applyEntryToRow(sheet: ExcelJS.Worksheet, rowNumber: number, entry: CrawlLogEntry): void {
-  const rowValues = buildRowValues(entry);
-  const row = sheet.getRow(rowNumber);
-  COLUMNS.forEach((column, index) => {
-    row.getCell(index + 1).value = rowValues[column.key];
-  });
-  row.alignment = { vertical: 'top', wrapText: true };
-}
-
-async function persistCrawlLogWorkbook(
-  logDirectory: FileSystemDirectoryHandle,
-  filename: string,
-  workbook: ExcelJS.Workbook
-): Promise<void> {
-  const buffer = await workbook.xlsx.writeBuffer();
-  await writeArrayBufferToDirectory(logDirectory, filename, buffer);
-}
-
 export async function beginIncrementalCrawlLog(
   saveDirectory: FileSystemDirectoryHandle,
   entry: CrawlLogEntry,
@@ -329,11 +429,10 @@ export async function beginIncrementalCrawlLog(
   let rowNumber = 0;
 
   await enqueueLogFileWrite(filename, async () => {
-    const { workbook, sheet } = await loadOrCreateWorkbook(logDirectory, filename);
-    const row = sheet.addRow(COLUMNS.map((column) => buildRowValues(entry)[column.key]));
-    row.alignment = { vertical: 'top', wrapText: true };
-    rowNumber = row.number;
-    await persistCrawlLogWorkbook(logDirectory, filename, workbook);
+    const { preamble, entryBlocks } = await loadLogEntryBlocks(logDirectory, filename, date);
+    rowNumber = getNextEntryIndex(entryBlocks);
+    entryBlocks.set(rowNumber, formatEntryBlock(rowNumber, entry));
+    await persistLogEntries(logDirectory, filename, preamble, entryBlocks);
   });
 
   return { rowNumber, logDate: date, executedAt: entry.executedAt };
@@ -348,9 +447,9 @@ export async function updateCrawlLogEntry(
   const filename = buildDailyCrawlLogFilename(handle.logDate);
 
   await enqueueLogFileWrite(filename, async () => {
-    const { workbook, sheet } = await loadOrCreateWorkbook(logDirectory, filename);
-    applyEntryToRow(sheet, handle.rowNumber, entry);
-    await persistCrawlLogWorkbook(logDirectory, filename, workbook);
+    const { preamble, entryBlocks } = await loadLogEntryBlocks(logDirectory, filename, handle.logDate);
+    entryBlocks.set(handle.rowNumber, formatEntryBlock(handle.rowNumber, entry));
+    await persistLogEntries(logDirectory, filename, preamble, entryBlocks);
   });
 }
 
@@ -363,10 +462,10 @@ export async function appendCrawlLogEntry(
   const filename = buildDailyCrawlLogFilename(date);
 
   await enqueueLogFileWrite(filename, async () => {
-    const { workbook, sheet } = await loadOrCreateWorkbook(logDirectory, filename);
-    const row = sheet.addRow(COLUMNS.map((column) => buildRowValues(entry)[column.key]));
-    row.alignment = { vertical: 'top', wrapText: true };
-    await persistCrawlLogWorkbook(logDirectory, filename, workbook);
+    const { preamble, entryBlocks } = await loadLogEntryBlocks(logDirectory, filename, date);
+    const entryIndex = getNextEntryIndex(entryBlocks);
+    entryBlocks.set(entryIndex, formatEntryBlock(entryIndex, entry));
+    await persistLogEntries(logDirectory, filename, preamble, entryBlocks);
   });
 }
 
