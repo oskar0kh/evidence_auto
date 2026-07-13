@@ -30,7 +30,7 @@ const COLUMNS = [
   { header: '보호/상태 이벤트', key: 'healthSummary' },
 ] as const;
 
-const ENTRY_MARKER_PATTERN = /^=== 크롤링 기록 #(\d+) ===$/;
+const ENTRY_MARKER_PATTERN = /^=== 크롤링 기록 #(\d+)(?: \(\d{2}:\d{2}:\d{2}\))? ===$/;
 
 const STEP_NAME_LABELS: Record<string, string> = {
   'apply-tracking-blocker': '광고/트래킹 차단',
@@ -246,7 +246,9 @@ function formatFieldLine(index: number, header: string, value: string | number):
 
 function formatEntryBlock(entryIndex: number, entry: CrawlLogEntry): string {
   const rowValues = buildRowValues(entry);
-  const lines = [`=== 크롤링 기록 #${entryIndex} ===`];
+  const executedTime = entry.executedAt.match(/\b(\d{2}:\d{2}:\d{2})$/)?.[1];
+  const timeLabel = executedTime ? ` (${executedTime})` : '';
+  const lines = [`=== 크롤링 기록 #${entryIndex}${timeLabel} ===`];
 
   COLUMNS.forEach((column, index) => {
     lines.push(formatFieldLine(index, column.header, rowValues[column.key]));
@@ -346,7 +348,7 @@ async function loadLogEntryBlocks(
 
   const { preamble, entryIndices } = parseLogFile(existing);
   const entryBlocks = new Map<number, string>();
-  const markerRegex = /^=== 크롤링 기록 #(\d+) ===$/gm;
+  const markerRegex = /^=== 크롤링 기록 #(\d+)(?: \(\d{2}:\d{2}:\d{2}\))? ===$/gm;
   const matches = [...existing.matchAll(markerRegex)];
 
   for (let index = 0; index < matches.length; index += 1) {
