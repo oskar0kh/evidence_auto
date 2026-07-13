@@ -33,15 +33,12 @@ export default function App() {
           saveDirectoryPath={crawl.saveDirectoryPath}
           onPickDirectory={() => void crawl.handlePickDirectory()}
           loading={crawl.loading}
-          saving={crawl.saving}
           savedResultsCount={crawl.savedCount}
-          manualExportAvailable={crawl.manualExportPosts.length > 0}
           lastCrawlDurationMs={crawl.lastCrawlDurationMs}
           infoMessage={crawl.infoMessage}
           error={crawl.error}
           onCrawl={() => void crawl.handleCrawl()}
           onSearchCrawl={() => void crawl.handleSearchCrawl()}
-          onSaveExcel={() => void crawl.handleSaveExcel()}
           onCancelCrawl={crawl.handleCancelCrawl}
           onGalleryLookup={() => void crawl.handleGalleryLookup()}
           onGallerySelect={crawl.handleGallerySelect}

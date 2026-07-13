@@ -24,15 +24,12 @@ interface CrawlFormProps {
   saveDirectoryPath: string;
   onPickDirectory: () => void;
   loading: boolean;
-  saving: boolean;
   savedResultsCount: number;
-  manualExportAvailable: boolean;
   lastCrawlDurationMs: number | null;
   infoMessage: string | null;
   error: string | null;
   onCrawl: () => void;
   onSearchCrawl: () => void;
-  onSaveExcel: () => void;
   onCancelCrawl: () => void;
   onGalleryLookup: () => void;
   onGallerySelect: (candidate: GalleryCandidate) => void;
@@ -58,15 +55,12 @@ export default function CrawlForm({
   saveDirectoryPath,
   onPickDirectory,
   loading,
-  saving,
   savedResultsCount,
-  manualExportAvailable,
   lastCrawlDurationMs,
   infoMessage,
   error,
   onCrawl,
   onSearchCrawl,
-  onSaveExcel,
   onCancelCrawl,
   onGalleryLookup,
   onGallerySelect,
@@ -216,16 +210,6 @@ export default function CrawlForm({
           {loading ? '검색·크롤링·캡처 중…' : '검색어 크롤링'}
         </button>
         <div className="save-cancel-group">
-          <button
-            type="button"
-            className="btn secondary btn-with-spinner"
-            onClick={onSaveExcel}
-            disabled={loading || saving || !manualExportAvailable}
-            aria-busy={saving}
-          >
-            <span className="btn-label">범죄일람표 수동 저장</span>
-            {saving && <span className="btn-spinner" aria-hidden="true" />}
-          </button>
           <button
             type="button"
             className="btn cancel-crawl"

@@ -4,7 +4,6 @@ import { crawlDcinsideStream, lookupDcinsideGalleries, searchCrawlDcinsideStream
 import { filterUrlsByGalleryId } from '../search/searchUtils';
 import {
   finalizeCrawlPersistSession,
-  persistCrimeListAndCaptures,
   type CrawlPersistSession,
 } from '../export/persistResults';
 import { CRAWL_BATCH_SIZE, chunkArray } from './constants';
@@ -69,13 +68,11 @@ export function useCrawlOrchestrator() {
   const saveDirectoryRef = useRef<FileSystemDirectoryHandle | null>(null);
   const [saveDirectoryPath, setSaveDirectoryPath] = useState('');
   const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
   const [progress, setProgress] = useState<CrawlProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
   const [savedCount, setSavedCount] = useState(0);
   const [resultsPreview, setResultsPreview] = useState<SavedResultPreview[]>([]);
-  const [manualExportPosts, setManualExportPosts] = useState<DcinsidePostData[]>([]);
   const [errors, setErrors] = useState<CrawlFailureRecord[]>([]);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [lastCrawlDurationMs, setLastCrawlDurationMs] = useState<number | null>(null);
@@ -823,43 +820,6 @@ export function useCrawlOrchestrator() {
     });
   };
 
-  const handleSaveExcel = async () => {
-    if (manualExportPosts.length === 0) {
-      if (savedCount > 0) {
-        setError(
-          '크롤 결과는 선택한 폴더에 자동 저장됐습니다. 수동 저장은 화면에 보관된 결과가 있을 때만 사용할 수 있습니다.'
-        );
-      } else {
-        setError('저장할 데이터가 없습니다. 먼저 크롤링을 실행해 주세요.');
-      }
-      return;
-    }
-    if (!saveDirectoryRef.current) {
-      setError('저장 폴더를 선택해 주세요.');
-      return;
-    }
-    setSaving(true);
-    try {
-      const { postsForExcel } = await persistCrimeListAndCaptures(
-        saveDirectoryRef.current,
-        manualExportPosts,
-        {
-          keyword: lastSearchKeywordRef.current,
-          galleryName: lastGalleryNameRef.current,
-        }
-      );
-      setManualExportPosts(postsForExcel);
-      setError(null);
-      setInfoMessage(null);
-      window.alert('저장이 완료됐습니다.');
-    } catch (e) {
-      const message = e instanceof Error ? e.message : '엑셀 생성 중 오류가 발생했습니다.';
-      setError(message);
-    } finally {
-      setSaving(false);
-    }
-  };
-
   return {
     urlInput,
     setUrlInput,
@@ -876,13 +836,11 @@ export function useCrawlOrchestrator() {
     setSearchEndDate,
     saveDirectoryPath,
     loading,
-    saving,
     progress,
     error,
     infoMessage,
     savedCount,
     resultsPreview,
-    manualExportPosts,
     errors,
     elapsedMs,
     lastCrawlDurationMs,
@@ -894,6 +852,5 @@ export function useCrawlOrchestrator() {
     handleSearchCrawl,
     handleGalleryPickerCancel,
     handleGallerySelect,
-    handleSaveExcel,
   };
 }

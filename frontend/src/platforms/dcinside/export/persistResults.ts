@@ -302,15 +302,3 @@ export async function finalizeCrawlPersistSession(
   }
   await mergeShardResults(session);
 }
-
-/** 수동 저장: 전체 결과를 새 결과물 폴더 집합에 shard 단위로 내보낸다. */
-export async function persistCrimeListAndCaptures(
-  directory: FileSystemDirectoryHandle,
-  posts: DcinsidePostData[],
-  options: PersistResultsOptions
-): Promise<{ stamp: string; postsForExcel: DcinsidePostData[] }> {
-  const session = await createCrawlPersistSession(directory, options);
-  const postsForExcel = await appendBatchToSession(session, posts);
-  await finalizeCrawlPersistSession(session);
-  return { stamp: session.stamp, postsForExcel };
-}
