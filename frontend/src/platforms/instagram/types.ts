@@ -5,6 +5,7 @@ export interface InstagramCommentData {
   timestamp: string;
   likeCount: number;
   isReply: boolean;
+  childCommentCount?: number;
 }
 
 export interface InstagramPostData {

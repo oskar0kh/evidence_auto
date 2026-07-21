@@ -39,6 +39,12 @@ interface CrawlFormProps {
   onGalleryLookup: () => void;
   onGallerySelect: (candidate: GalleryCandidate) => void;
   onGalleryPickerCancel: () => void;
+  showInstagramLogin?: boolean;
+  instagramLoggedIn?: boolean;
+  instagramLoginInProgress?: boolean;
+  instagramLoginMessage?: string | null;
+  onInstagramLogin?: () => void;
+  onInstagramLoginCancel?: () => void;
   progressPanel?: React.ReactNode;
 }
 
@@ -74,6 +80,12 @@ export default function CrawlForm({
   onGalleryLookup,
   onGallerySelect,
   onGalleryPickerCancel,
+  showInstagramLogin = false,
+  instagramLoggedIn = false,
+  instagramLoginInProgress = false,
+  instagramLoginMessage = null,
+  onInstagramLogin,
+  onInstagramLoginCancel,
   progressPanel,
 }: CrawlFormProps) {
   const showGallerySection = selectedCommunities.includes('dcinside');
@@ -234,6 +246,40 @@ export default function CrawlForm({
         <code>인스타그램/</code>) 아래 <code>결과물_YYYYMMDD_HHMM</code>에 엑셀과{' '}
         <code>Screenshot</code> 폴더가 생성됩니다.
       </p>
+
+      {showInstagramLogin ? (
+        <div className="instagram-session-row">
+          <div className="button-row">
+            <button
+              type="button"
+              className="btn secondary"
+              onClick={onInstagramLogin}
+              disabled={loading || instagramLoginInProgress}
+            >
+              {instagramLoginInProgress ? '로그인 대기 중…' : '인스타 로그인'}
+            </button>
+            {instagramLoginInProgress ? (
+              <button
+                type="button"
+                className="btn cancel-crawl"
+                onClick={onInstagramLoginCancel}
+                aria-label="인스타 로그인 취소"
+                title="인스타 로그인 취소"
+              >
+                ✕
+              </button>
+            ) : null}
+            <span className="saved-count">
+              {instagramLoggedIn ? '세션: 로그인됨' : '세션: 없음 (댓글 일부만 수집)'}
+            </span>
+          </div>
+          {instagramLoginMessage ? <p className="field-hint">{instagramLoginMessage}</p> : null}
+          <p className="field-hint">
+            Chrome 창이 열리면 Instagram에 로그인해 주세요. 완료되면 쿠키가 자동 저장되고
+            댓글 전체 수집에 사용됩니다. (WSL은 WSLg/디스플레이가 필요합니다)
+          </p>
+        </div>
+      ) : null}
 
       <div className="button-row">
         <button

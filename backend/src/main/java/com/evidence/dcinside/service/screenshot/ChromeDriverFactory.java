@@ -20,6 +20,7 @@ import java.nio.file.Paths;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -32,6 +33,8 @@ public final class ChromeDriverFactory {
 
     private static final Logger log = LoggerFactory.getLogger(ChromeDriverFactory.class);
     private static final Pattern CHROME_VERSION_PATTERN = Pattern.compile("(\\d+)\\.");
+    private static final Pattern CHROME_FULL_VERSION_PATTERN =
+            Pattern.compile("(\\d+\\.\\d+\\.\\d+\\.\\d+)");
 
     private ChromeDriverFactory() {
     }
@@ -74,14 +77,65 @@ public final class ChromeDriverFactory {
     public static void setupChromeDriver(String chromeBinary) {
         String versionOutput = readChromeVersionOutput(chromeBinary);
         DcinsideUserAgent.syncFromChromeVersionOutput(versionOutput);
+        String fullVersion = detectChromeFullVersion(versionOutput);
         String majorVersion = detectChromeMajorVersion(versionOutput);
+
         WebDriverManager manager = WebDriverManager.chromedriver();
-        if (!majorVersion.isEmpty()) {
-            manager.browserVersion(majorVersion);
-            log.info("ChromeDriver browserVersion={}", majorVersion);
+
+        String driverVersion = !fullVersion.isBlank() ? fullVersion : majorVersion;
+        if (!driverVersion.isBlank()) {
+            manager.browserVersion(driverVersion);
+            log.info("ChromeDriver browserVersion={} (binary={})", driverVersion, chromeBinary);
         }
+
         manager.setup();
-        log.info("Synchronized User-Agent with Chrome: {}", DcinsideConstants.userAgent());
+        pinChromeDriverToBrowserVersion(fullVersion, majorVersion);
+        log.info(
+                "ChromeDriver ready: {} | Chrome {} | User-Agent: {}",
+                System.getProperty("webdriver.chrome.driver", manager.getDownloadedDriverPath()),
+                fullVersion.isBlank() ? majorVersion : fullVersion,
+                DcinsideConstants.userAgent()
+        );
+    }
+
+    /**
+     * WebDriverManager가 시스템 Chrome(예: 151)용 드라이버를 고르는 경우가 있어,
+     * 실제 바이너리 버전과 일치하는 캐시 chromedriver로 고정한다.
+     */
+    private static void pinChromeDriverToBrowserVersion(String fullVersion, String majorVersion) {
+        resolveCachedChromeDriver(fullVersion, majorVersion).ifPresent(driverPath -> {
+            System.setProperty("webdriver.chrome.driver", driverPath);
+            log.info("ChromeDriver pinned to {}", driverPath);
+        });
+    }
+
+    private static Optional<String> resolveCachedChromeDriver(String fullVersion, String majorVersion) {
+        Path root = Path.of(System.getProperty("user.home"), ".cache/selenium/chromedriver/linux64");
+        if (!Files.isDirectory(root)) {
+            return Optional.empty();
+        }
+        if (!fullVersion.isBlank()) {
+            Path exact = root.resolve(fullVersion).resolve("chromedriver");
+            if (Files.isExecutable(exact)) {
+                return Optional.of(exact.toAbsolutePath().toString());
+            }
+        }
+        if (majorVersion.isBlank()) {
+            return Optional.empty();
+        }
+        try (var entries = Files.list(root)) {
+            return entries
+                    .filter(Files::isDirectory)
+                    .filter(dir -> dir.getFileName().toString().startsWith(majorVersion + "."))
+                    .sorted((a, b) -> b.getFileName().toString().compareTo(a.getFileName().toString()))
+                    .map(dir -> dir.resolve("chromedriver"))
+                    .filter(Files::isExecutable)
+                    .map(path -> path.toAbsolutePath().toString())
+                    .findFirst();
+        } catch (Exception e) {
+            log.debug("Cached chromedriver lookup failed: {}", e.getMessage());
+            return Optional.empty();
+        }
     }
 
     public static ChromeDriver createDriver(String chromeBinary) {
@@ -154,6 +208,23 @@ public final class ChromeDriverFactory {
     }
 
     public static ChromeDriver createDriver(String chromeBinary, int startTimeoutSeconds) {
+        return createDriver(chromeBinary, startTimeoutSeconds, true, null);
+    }
+
+    /**
+     * Instagram 로그인 헬퍼용: 창이 보이는 Chrome + 프로필 디렉터리.
+     * 한 번 로그인하면 같은 user-data-dir에서 세션이 유지된다.
+     */
+    public static ChromeDriver createHeadedDriver(String chromeBinary, Path userDataDir) {
+        return createDriver(chromeBinary, 60, false, userDataDir);
+    }
+
+    public static ChromeDriver createDriver(
+            String chromeBinary,
+            int startTimeoutSeconds,
+            boolean headless,
+            Path userDataDir
+    ) {
         ChromeOptions options = new ChromeOptions();
         options.setBinary(chromeBinary);
         options.setPageLoadStrategy(PageLoadStrategy.NONE);
@@ -163,8 +234,10 @@ public final class ChromeDriverFactory {
         prefs.put("translate.enabled", false);
         options.setExperimentalOption("prefs", prefs);
 
+        if (headless) {
+            options.addArguments("--headless=new");
+        }
         options.addArguments(
-                "--headless=new",
                 "--disable-gpu",
                 "--no-sandbox",
                 "--disable-setuid-sandbox",
@@ -176,10 +249,28 @@ public final class ChromeDriverFactory {
                 "--lang=ko-KR",
                 "--accept-lang=ko-KR,ko"
         );
+        if (userDataDir != null) {
+            try {
+                Files.createDirectories(userDataDir);
+            } catch (Exception e) {
+                throw new IllegalStateException("Chrome 프로필 디렉터리 생성 실패: " + userDataDir, e);
+            }
+            options.addArguments("--user-data-dir=" + userDataDir.toAbsolutePath());
+        }
         options.addArguments("--user-agent=" + DcinsideConstants.userAgent());
 
+        // Selenium withEnvironment는 프로세스 env를 통째로 교체하므로 기존 env를 복사한다.
+        Map<String, String> env = new HashMap<>(System.getenv());
+        env.put("LANG", "ko_KR.UTF-8");
+        env.put("LC_ALL", "ko_KR.UTF-8");
+        String display = env.get("DISPLAY");
+        if (!headless && (display == null || display.isBlank())) {
+            // WSLg 기본 디스플레이
+            env.put("DISPLAY", ":0");
+        }
+
         ChromeDriverService service = new ChromeDriverService.Builder()
-                .withEnvironment(Map.of("LANG", "ko_KR.UTF-8", "LC_ALL", "ko_KR.UTF-8"))
+                .withEnvironment(env)
                 .build();
 
         int timeout = Math.max(5, startTimeoutSeconds);
@@ -284,6 +375,14 @@ public final class ChromeDriverFactory {
 
     private static String detectChromeMajorVersion(String versionOutput) {
         Matcher matcher = CHROME_VERSION_PATTERN.matcher(versionOutput == null ? "" : versionOutput);
+        if (matcher.find()) {
+            return matcher.group(1);
+        }
+        return "";
+    }
+
+    static String detectChromeFullVersion(String versionOutput) {
+        Matcher matcher = CHROME_FULL_VERSION_PATTERN.matcher(versionOutput == null ? "" : versionOutput);
         if (matcher.find()) {
             return matcher.group(1);
         }

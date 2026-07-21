@@ -47,6 +47,12 @@ export default function App() {
           onGalleryLookup={() => void crawl.handleGalleryLookup()}
           onGallerySelect={crawl.handleGallerySelect}
           onGalleryPickerCancel={crawl.handleGalleryPickerCancel}
+          showInstagramLogin={crawl.selectedCommunities.includes('instagram')}
+          instagramLoggedIn={crawl.instagramLoggedIn}
+          instagramLoginInProgress={crawl.instagramLoginInProgress}
+          instagramLoginMessage={crawl.instagramLoginMessage}
+          onInstagramLogin={() => void crawl.handleInstagramLogin()}
+          onInstagramLoginCancel={() => void crawl.handleInstagramLoginCancel()}
           progressPanel={
             crawl.loading && crawl.progress ? (
               <CrawlProgressPanel

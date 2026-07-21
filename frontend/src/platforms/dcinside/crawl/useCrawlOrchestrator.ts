@@ -8,7 +8,7 @@ import {
 } from '../export/persistResults';
 import { formatTimestamp } from '../export/pathUtils';
 import { CRAWL_BATCH_SIZE, chunkArray } from './constants';
-import { crawlInstagramStream, searchCrawlInstagramStream } from '../../instagram/api';
+import { crawlInstagramStream, searchCrawlInstagramStream, cancelInstagramLogin, fetchInstagramSessionStatus, startInstagramLogin } from '../../instagram/api';
 import {
   saveInstagramBatchResults,
   toInstagramUnifiedPreview,
@@ -101,6 +101,9 @@ export function useCrawlOrchestrator() {
   const [errors, setErrors] = useState<CrawlFailureRecord[]>([]);
   const [elapsedMs, setElapsedMs] = useState(0);
   const [lastCrawlDurationMs, setLastCrawlDurationMs] = useState<number | null>(null);
+  const [instagramLoggedIn, setInstagramLoggedIn] = useState(false);
+  const [instagramLoginInProgress, setInstagramLoginInProgress] = useState(false);
+  const [instagramLoginMessage, setInstagramLoginMessage] = useState<string | null>(null);
   const crawlStartAtRef = useRef<number | null>(null);
   const crawlAbortRef = useRef<AbortController | null>(null);
   const sessionMetricsRef = useRef<CrawlSessionMetrics | null>(null);
@@ -122,6 +125,73 @@ export function useCrawlOrchestrator() {
     }, 100);
     return () => window.clearInterval(timerId);
   }, [loading]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const refresh = async () => {
+      try {
+        const status = await fetchInstagramSessionStatus();
+        if (cancelled) return;
+        setInstagramLoggedIn(status.loggedIn);
+        setInstagramLoginInProgress(status.loginInProgress);
+        setInstagramLoginMessage(status.message || null);
+      } catch {
+        // backend not ready
+      }
+    };
+    void refresh();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!instagramLoginInProgress) return;
+    const timerId = window.setInterval(() => {
+      void (async () => {
+        try {
+          const status = await fetchInstagramSessionStatus();
+          setInstagramLoggedIn(status.loggedIn);
+          setInstagramLoginInProgress(status.loginInProgress);
+          setInstagramLoginMessage(status.message || null);
+          if (!status.loginInProgress && status.phase === 'SUCCESS') {
+            setInfoMessage(status.message);
+          }
+          if (!status.loginInProgress && status.phase === 'FAILED') {
+            setError(status.message);
+          }
+        } catch (e) {
+          setInstagramLoginInProgress(false);
+          setError(e instanceof Error ? e.message : '인스타 세션 상태 조회 실패');
+        }
+      })();
+    }, 1500);
+    return () => window.clearInterval(timerId);
+  }, [instagramLoginInProgress]);
+
+  const handleInstagramLogin = async () => {
+    setError(null);
+    try {
+      const result = await startInstagramLogin();
+      setInstagramLoginInProgress(true);
+      setInstagramLoggedIn(result.status.loggedIn);
+      setInstagramLoginMessage(result.message || result.status.message);
+      setInfoMessage(result.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '인스타 로그인 헬퍼를 시작할 수 없습니다.');
+    }
+  };
+
+  const handleInstagramLoginCancel = async () => {
+    try {
+      const result = await cancelInstagramLogin();
+      setInstagramLoginInProgress(result.status.loginInProgress);
+      setInstagramLoggedIn(result.status.loggedIn);
+      setInstagramLoginMessage(result.status.message);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : '인스타 로그인 취소를 실패했습니다.');
+    }
+  };
 
   const syncSavedCountRef = () => {
     savedCountRef.current = savedCount;
@@ -1286,5 +1356,10 @@ export function useCrawlOrchestrator() {
     handleSearchCrawl,
     handleGalleryPickerCancel,
     handleGallerySelect,
+    instagramLoggedIn,
+    instagramLoginInProgress,
+    instagramLoginMessage,
+    handleInstagramLogin,
+    handleInstagramLoginCancel,
   };
 }

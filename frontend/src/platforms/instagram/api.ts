@@ -177,3 +177,54 @@ export async function searchCrawlInstagramStream(
     options.onUrlTiming
   );
 }
+
+export type InstagramSessionPhase =
+  | 'IDLE'
+  | 'STARTING'
+  | 'WAITING_LOGIN'
+  | 'SAVING'
+  | 'SUCCESS'
+  | 'FAILED'
+  | 'CANCELLED';
+
+export interface InstagramSessionStatus {
+  phase: InstagramSessionPhase;
+  loggedIn: boolean;
+  loginInProgress: boolean;
+  message: string;
+  cookiesFile: string;
+  profileDir: string;
+  updatedAt: string;
+}
+
+export async function fetchInstagramSessionStatus(): Promise<InstagramSessionStatus> {
+  const response = await fetch('/api/crawl/instagram/session');
+  if (!response.ok) {
+    throw new Error(`세션 상태 조회 실패 (${response.status})`);
+  }
+  return response.json() as Promise<InstagramSessionStatus>;
+}
+
+export async function startInstagramLogin(): Promise<{
+  started: boolean;
+  message: string;
+  status: InstagramSessionStatus;
+}> {
+  const response = await fetch('/api/crawl/instagram/session/login', { method: 'POST' });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error((body as { error?: string }).error ?? `로그인 헬퍼 시작 실패 (${response.status})`);
+  }
+  return response.json();
+}
+
+export async function cancelInstagramLogin(): Promise<{
+  cancelled: boolean;
+  status: InstagramSessionStatus;
+}> {
+  const response = await fetch('/api/crawl/instagram/session/cancel', { method: 'POST' });
+  if (!response.ok) {
+    throw new Error(`로그인 헬퍼 취소 실패 (${response.status})`);
+  }
+  return response.json();
+}

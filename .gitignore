@@ -28,5 +28,11 @@ Thumbs.db
 backend/google-chrome-stable_current_amd64.deb
 backend/.chrome/
 
+# Instagram login helper (secrets / browser profile)
+backend/.instagram-session-cookies.txt
+backend/.instagram-chrome-profile/
+**/.instagram-session-cookies.txt
+**/.instagram-chrome-profile/
+
 # TypeScript
 *.tsbuildinfo
