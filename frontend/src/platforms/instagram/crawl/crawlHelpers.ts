@@ -8,7 +8,153 @@ import {
   type PersistResultsOptions,
 } from '../export/persistResults';
 import { INSTAGRAM_COMMUNITY_NAME } from '../export/pathUtils';
-import type { SavedResultPreview as UnifiedSavedResultPreview } from '../../dcinside/crawl/crawlHelpers';
+import type {
+  CrawlLogContext,
+  CrawlLogSession,
+  CrawlLogSnapshot,
+  SavedResultPreview as UnifiedSavedResultPreview,
+} from '../../dcinside/crawl/crawlHelpers';
+import {
+  buildLiveCrawlLogSnapshot,
+  scheduleCrawlLogFlush,
+} from '../../dcinside/crawl/crawlHelpers';
+import type { CrawlFailureRecord, CrawlLogEntry, UrlTiming } from '../../dcinside/crawl/types';
+import {
+  aggregateStepTimings,
+  appendCrawlLogEntry,
+  beginIncrementalCrawlLog,
+  formatExecutedAt,
+  formatFailureReasons,
+  mergeCrawlFailures,
+  pickFirstStepMs,
+  pickStepMs,
+  updateCrawlLogEntry,
+  type IncrementalCrawlLogHandle,
+} from '../../dcinside/crawl/crawlLogExport';
+import {
+  createCrawlSessionMetrics,
+  formatCrawlSessionMetricsForLog,
+  type CrawlSessionMetrics,
+} from '../../dcinside/crawl/crawlSessionMetrics';
+
+export type { CrawlLogSession, CrawlLogSnapshot };
+export { buildLiveCrawlLogSnapshot, scheduleCrawlLogFlush };
+
+/** 인스타그램 단계명에 맞춰 로그 컬럼을 채운다. (디시 buildCrawlLogEntry와 분리) */
+export function buildInstagramCrawlLogEntry(
+  context: CrawlLogContext,
+  snapshot: CrawlLogSnapshot,
+  executedAt: string
+): CrawlLogEntry {
+  const extraFailures = snapshot.extraFailures ?? [];
+  const mergedFailures = mergeCrawlFailures(snapshot.errors, snapshot.timings, extraFailures);
+  const stepDetails = aggregateStepTimings(snapshot.timings);
+  const metrics = snapshot.sessionMetrics ?? createCrawlSessionMetrics();
+  const formattedMetrics = formatCrawlSessionMetricsForLog(metrics);
+
+  return {
+    executedAt,
+    keyword: context.keyword,
+    searchDateRange: context.searchDateRange,
+    galleryName: context.galleryName,
+    inputMode: context.inputMode,
+    attemptedCount: snapshot.attemptedCount,
+    successCount: snapshot.successCount,
+    failCount: Math.max(snapshot.attemptedCount - snapshot.successCount, mergedFailures.length),
+    failureReasons: formatFailureReasons(mergedFailures),
+    totalMs: snapshot.totalMs,
+    textCrawlMs:
+      pickFirstStepMs(stepDetails, 'text-crawl') ??
+      pickStepMs(stepDetails, 'fetch-page', 'parse-html', 'graphql-post', 'fetch-comments', 'build-result'),
+    pageNavigateMs: pickStepMs(stepDetails, 'page-navigate'),
+    waitContentMs: pickStepMs(stepDetails, 'wait-content'),
+    waitCommentsMs: pickStepMs(stepDetails, 'fetch-comments', 'wait-comments'),
+    captureImagesMs: pickStepMs(stepDetails, 'capture-images'),
+    screenshotMs:
+      pickFirstStepMs(stepDetails, 'screenshot') ??
+      pickStepMs(stepDetails, 'page-navigate', 'wait-content', 'screenshot-scroll', 'capture-images'),
+    stepDetails,
+    operationLog: formattedMetrics.operationLog,
+    urlRetrySummary: formattedMetrics.urlRetrySummary,
+    healthSummary: formattedMetrics.healthSummary,
+  };
+}
+
+export async function beginInstagramCrawlLogSession(
+  directory: FileSystemDirectoryHandle | null,
+  context: CrawlLogContext
+): Promise<CrawlLogSession | null> {
+  if (!directory) {
+    return null;
+  }
+
+  const executedAt = formatExecutedAt();
+  const initialEntry = buildInstagramCrawlLogEntry(
+    context,
+    {
+      attemptedCount: 0,
+      successCount: 0,
+      errors: [],
+      timings: [],
+      totalMs: 0,
+      sessionMetrics: createCrawlSessionMetrics(),
+    },
+    executedAt
+  );
+
+  try {
+    const handle = await beginIncrementalCrawlLog(directory, initialEntry);
+    return {
+      handle,
+      flush: async (snapshot) => {
+        const entry = buildInstagramCrawlLogEntry(context, snapshot, handle.executedAt);
+        await updateCrawlLogEntry(directory, handle, entry);
+      },
+    };
+  } catch (e) {
+    console.error('인스타그램 크롤링 로그 초기화 실패:', e);
+    return null;
+  }
+}
+
+export async function saveInstagramCrawlLog(
+  directory: FileSystemDirectoryHandle | null,
+  context: CrawlLogContext,
+  attemptedCount: number,
+  successCount: number,
+  errors: CrawlFailureRecord[],
+  totalMs: number,
+  timings: UrlTiming[],
+  extraFailures: CrawlFailureRecord[] = [],
+  sessionMetrics?: CrawlSessionMetrics | null,
+  incrementalHandle?: IncrementalCrawlLogHandle | null
+): Promise<void> {
+  if (!directory) {
+    return;
+  }
+
+  const snapshot: CrawlLogSnapshot = {
+    attemptedCount,
+    successCount,
+    errors,
+    timings,
+    totalMs,
+    extraFailures,
+    sessionMetrics,
+  };
+  const executedAt = incrementalHandle?.executedAt ?? formatExecutedAt();
+  const entry = buildInstagramCrawlLogEntry(context, snapshot, executedAt);
+
+  try {
+    if (incrementalHandle) {
+      await updateCrawlLogEntry(directory, incrementalHandle, entry);
+      return;
+    }
+    await appendCrawlLogEntry(directory, entry);
+  } catch (e) {
+    console.error('인스타그램 크롤링 로그 저장 실패:', e);
+  }
+}
 
 export async function saveInstagramBatchResults(
   session: CrawlPersistSession | null,

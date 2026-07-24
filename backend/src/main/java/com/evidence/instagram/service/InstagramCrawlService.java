@@ -1,6 +1,9 @@
 package com.evidence.instagram.service;
 
 import com.evidence.dcinside.dto.CaptureImage;
+import com.evidence.dcinside.dto.TimedResult;
+import com.evidence.dcinside.util.StepTimer;
+import com.evidence.dcinside.util.StepTimings;
 import com.evidence.instagram.dto.InstagramCommentData;
 import com.evidence.instagram.dto.InstagramPostData;
 import com.evidence.instagram.http.InstagramHttpClient;
@@ -40,23 +43,51 @@ public class InstagramCrawlService {
     }
 
     public InstagramParsedPost fetchParsedPost(String url) throws Exception {
+        return fetchParsedPostTimed(url).value();
+    }
+
+    public TimedResult<InstagramParsedPost> fetchParsedPostTimed(String url) throws Exception {
+        TimedResult<InstagramParsedPost> meta = fetchPostMetaTimed(url);
+        httpClient.reloadSessionCookiesFromFile();
+        TimedResult<InstagramParsedPost> withComments = collectCommentsTimed(meta.value());
+        return new TimedResult<>(
+                withComments.value(),
+                StepTimings.merge(meta.timings(), withComments.timings())
+        );
+    }
+
+    /** 게시글 메타만 조회 (댓글 제외). 스크린샷과 병렬 실행할 때 사용. */
+    public TimedResult<InstagramParsedPost> fetchPostMetaTimed(String url) throws Exception {
+        StepTimer timer = new StepTimer(log, "instagram-meta " + url);
         String normalized = InstagramUrlUtils.normalizeUrl(url);
         String shortcode = InstagramUrlUtils.extractShortcode(normalized);
 
-        // 쿠키/CSRF 확보용. 비로그인 GET은 보통 prefetch JSON이 없는 셸 HTML만 준다.
         HttpResponse<String> htmlResponse = httpClient.getHtml(normalized);
-        InstagramParsedPost post = htmlParser.tryParse(normalized, shortcode, htmlResponse.body());
+        timer.step("fetch-page");
 
+        InstagramParsedPost post = htmlParser.tryParse(normalized, shortcode, htmlResponse.body());
         if (post.username().isBlank() && post.caption().isBlank()) {
             log.info("HTML prefetch empty for {}; falling back to GraphQL PolarisPostRootQuery", shortcode);
             post = graphqlClient.fetchPost(normalized, shortcode);
+            timer.step("graphql-post");
+        } else {
+            timer.step("parse-html");
         }
 
         post.setUrl(normalized);
         post.setShortcode(shortcode);
-        httpClient.reloadSessionCookiesFromFile();
+        return new TimedResult<>(post, timer.finish());
+    }
+
+    public void collectComments(InstagramParsedPost post) {
         commentService.collectComments(post);
-        return post;
+    }
+
+    public TimedResult<InstagramParsedPost> collectCommentsTimed(InstagramParsedPost post) {
+        StepTimer timer = new StepTimer(log, "instagram-comments " + post.shortcode());
+        collectComments(post);
+        timer.step("fetch-comments");
+        return new TimedResult<>(post, timer.finish());
     }
 
     public List<InstagramPostData> buildRows(InstagramParsedPost post, String searchQuery) {

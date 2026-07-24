@@ -2,15 +2,21 @@ package com.evidence.instagram.controller;
 
 import com.evidence.dcinside.dto.CaptureImage;
 import com.evidence.dcinside.dto.CrawlProgressEvent;
+import com.evidence.dcinside.dto.TimedResult;
+import com.evidence.dcinside.dto.UrlTiming;
+import com.evidence.dcinside.util.StepTimer;
+import com.evidence.dcinside.util.StepTimings;
 import com.evidence.instagram.dto.InstagramCrawlRequest;
 import com.evidence.instagram.dto.InstagramPostData;
 import com.evidence.instagram.dto.InstagramSearchCrawlRequest;
+import com.evidence.instagram.http.InstagramHttpClient;
 import com.evidence.instagram.model.InstagramParsedPost;
 import com.evidence.instagram.service.InstagramCrawlService;
 import com.evidence.instagram.service.InstagramScreenshotService;
 import com.evidence.instagram.util.InstagramUrlUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -23,6 +29,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
 import java.util.function.Consumer;
 
 @RestController
@@ -33,13 +40,19 @@ public class InstagramCrawlController {
 
     private final InstagramCrawlService crawlService;
     private final InstagramScreenshotService screenshotService;
+    private final InstagramHttpClient httpClient;
+    private final boolean parallelScreenshot;
 
     public InstagramCrawlController(
             InstagramCrawlService crawlService,
-            InstagramScreenshotService screenshotService
+            InstagramScreenshotService screenshotService,
+            InstagramHttpClient httpClient,
+            @Value("${evidence.instagram.parallel-screenshot:true}") boolean parallelScreenshot
     ) {
         this.crawlService = crawlService;
         this.screenshotService = screenshotService;
+        this.httpClient = httpClient;
+        this.parallelScreenshot = parallelScreenshot;
     }
 
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -112,38 +125,146 @@ public class InstagramCrawlController {
             InstagramScreenshotService.CaptureSession captureSession
     ) {
         callbacks.progress.accept(state.progress(url, "fetch"));
+        StepTimer timer = new StepTimer(log, "instagram-crawl " + url);
+        List<StepTimings> partialTimings = new ArrayList<>();
         try {
-            InstagramParsedPost parsed = crawlService.fetchParsedPost(url);
-            List<InstagramPostData> rows = crawlService.buildRows(parsed, searchQuery);
-
-            if (!rows.isEmpty() && captureSession != null) {
-                callbacks.progress.accept(state.progress(url, "screenshot"));
-                int serial = state.nextSerial();
-                CaptureImage capture = captureSession.capturePost(
-                        parsed.url(),
-                        serial,
-                        parsed.shortcode()
-                );
-                rows = crawlService.attachCapture(rows, capture);
+            if (captureSession != null && parallelScreenshot) {
+                processUrlParallel(url, searchQuery, state, callbacks, captureSession, timer, partialTimings);
+            } else {
+                processUrlSequential(url, searchQuery, state, callbacks, captureSession, timer, partialTimings);
             }
-
-            for (InstagramPostData row : rows) {
-                callbacks.urlResult.accept(row);
-                state.successCount++;
-            }
-            if (rows.isEmpty()) {
-                state.failCount++;
-                callbacks.urlError.accept(errorEntry(url, new IllegalStateException("파싱 결과가 비어 있습니다.")));
-            }
-            state.completed++;
-            callbacks.progress.accept(state.progress(url, "url-done"));
         } catch (Exception e) {
             log.warn("Instagram URL crawl failed: {} — {}", url, e.getMessage());
+            callbacks.urlTiming.accept(buildTiming(url, false, timer, partialTimings));
             state.failCount++;
             state.completed++;
             callbacks.urlError.accept(errorEntry(url, e));
             callbacks.progress.accept(state.progress(url, "url-error"));
         }
+    }
+
+    private void processUrlSequential(
+            String url,
+            String searchQuery,
+            CrawlState state,
+            CrawlCallbacks callbacks,
+            InstagramScreenshotService.CaptureSession captureSession,
+            StepTimer timer,
+            List<StepTimings> partialTimings
+    ) throws Exception {
+        TimedResult<InstagramParsedPost> fetched = crawlService.fetchParsedPostTimed(url);
+        partialTimings.add(fetched.timings());
+        timer.step("text-crawl");
+
+        InstagramParsedPost parsed = fetched.value();
+        List<InstagramPostData> rows = crawlService.buildRows(parsed, searchQuery);
+        timer.step("build-result");
+
+        if (!rows.isEmpty() && captureSession != null) {
+            callbacks.progress.accept(state.progress(url, "screenshot"));
+            int serial = state.nextSerial();
+            TimedResult<CaptureImage> capture = captureSession.capturePostTimed(
+                    parsed.url(),
+                    serial,
+                    parsed.shortcode()
+            );
+            partialTimings.add(capture.timings());
+            timer.step("screenshot");
+            rows = crawlService.attachCapture(rows, capture.value());
+            timer.step("attach-capture");
+        }
+
+        emitSuccess(url, rows, state, callbacks, timer, partialTimings);
+    }
+
+    private void processUrlParallel(
+            String url,
+            String searchQuery,
+            CrawlState state,
+            CrawlCallbacks callbacks,
+            InstagramScreenshotService.CaptureSession captureSession,
+            StepTimer timer,
+            List<StepTimings> partialTimings
+    ) throws Exception {
+        TimedResult<InstagramParsedPost> meta = crawlService.fetchPostMetaTimed(url);
+        partialTimings.add(meta.timings());
+        InstagramParsedPost parsed = meta.value();
+        httpClient.reloadSessionCookiesFromFile();
+
+        callbacks.progress.accept(state.progress(url, "screenshot"));
+        int serial = state.nextSerial();
+
+        CompletableFuture<TimedResult<InstagramParsedPost>> commentsFuture = CompletableFuture.supplyAsync(
+                () -> crawlService.collectCommentsTimed(parsed)
+        );
+
+        TimedResult<CaptureImage> capture;
+        try {
+            capture = captureSession.capturePostTimed(parsed.url(), serial, parsed.shortcode());
+            partialTimings.add(capture.timings());
+            timer.step("screenshot");
+        } catch (Exception captureError) {
+            commentsFuture.cancel(true);
+            throw captureError;
+        }
+
+        TimedResult<InstagramParsedPost> withComments;
+        try {
+            withComments = commentsFuture.join();
+        } catch (CompletionException e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            if (cause instanceof Exception ex) {
+                throw ex;
+            }
+            throw e;
+        }
+        partialTimings.add(withComments.timings());
+        timer.step("text-crawl");
+
+        List<InstagramPostData> rows = crawlService.buildRows(withComments.value(), searchQuery);
+        timer.step("build-result");
+        rows = crawlService.attachCapture(rows, capture.value());
+        timer.step("attach-capture");
+
+        emitSuccess(url, rows, state, callbacks, timer, partialTimings);
+    }
+
+    private void emitSuccess(
+            String url,
+            List<InstagramPostData> rows,
+            CrawlState state,
+            CrawlCallbacks callbacks,
+            StepTimer timer,
+            List<StepTimings> partialTimings
+    ) {
+        UrlTiming successTiming = buildTiming(url, true, timer, partialTimings);
+        callbacks.urlTiming.accept(successTiming);
+
+        for (InstagramPostData row : rows) {
+            callbacks.urlResult.accept(row);
+            state.successCount++;
+        }
+        if (rows.isEmpty()) {
+            state.failCount++;
+            callbacks.urlError.accept(errorEntry(url, new IllegalStateException("파싱 결과가 비어 있습니다.")));
+        }
+        state.completed++;
+        callbacks.progress.accept(state.progress(url, "url-done"));
+    }
+
+    private static UrlTiming buildTiming(
+            String url,
+            boolean success,
+            StepTimer timer,
+            List<StepTimings> partialTimings
+    ) {
+        StepTimings outer = timer.finish();
+        StepTimings mergedInner = partialTimings.isEmpty()
+                ? new StepTimings("empty", Map.of(), 0)
+                : StepTimings.merge(partialTimings.toArray(StepTimings[]::new));
+        Map<String, Long> steps = new LinkedHashMap<>(mergedInner.normalizedSteps());
+        outer.normalizedSteps().forEach((name, ms) -> steps.merge(name, ms, Long::sum));
+        return new UrlTiming(url, success, outer.totalMs(), Map.copyOf(steps));
     }
 
     private void sendEvent(SseEmitter emitter, String eventName, Object payload) {
@@ -181,13 +302,15 @@ public class InstagramCrawlController {
     private record CrawlCallbacks(
             Consumer<CrawlProgressEvent> progress,
             Consumer<InstagramPostData> urlResult,
-            Consumer<Map<String, Object>> urlError
+            Consumer<Map<String, Object>> urlError,
+            Consumer<UrlTiming> urlTiming
     ) {
         static CrawlCallbacks streaming(InstagramCrawlController controller, SseEmitter emitter) {
             return new CrawlCallbacks(
                     event -> controller.sendEvent(emitter, "progress", event),
                     data -> controller.sendEvent(emitter, "url-result", data),
-                    error -> controller.sendEvent(emitter, "url-error", error)
+                    error -> controller.sendEvent(emitter, "url-error", error),
+                    timing -> controller.sendEvent(emitter, "url-timing", timing)
             );
         }
     }

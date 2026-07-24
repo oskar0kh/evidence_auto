@@ -43,20 +43,24 @@ const STEP_NAME_LABELS: Record<string, string> = {
   'fetch-comments': '댓글 수집',
   'fetch-page': '페이지 요청',
   'find-capture-target': '캡처 대상 찾기',
+  'graphql-post': 'GraphQL 게시글 조회',
   'merge-images': '이미지 병합',
   'page-navigate': '페이지 접속',
   'parse-html': 'HTML 파싱',
   'quit-driver': '드라이버 종료',
   'read-temp-file': '임시 파일 읽기',
   screenshot: '스크린샷',
+  'screenshot-scroll': '스크린샷 스크롤',
   'text-crawl': '텍스트 수집',
   'wait-comments': '댓글 대기',
+  'wait-content': '본문 대기',
   'wait-gallview-head': '본문 대기',
   'write-temp-file': '임시 파일 저장',
 };
 
 const FAILURE_STAGE_LABELS: Record<string, string> = {
   search: 'URL 수집',
+  fetch: '데이터 수집',
   'text-crawl': '텍스트 수집',
   screenshot: '스크린샷',
   'attach-capture': '결과 저장',
@@ -64,6 +68,7 @@ const FAILURE_STAGE_LABELS: Record<string, string> = {
   connection: 'HTTP 연결',
   session: '세션/스트림',
   'url-failed': '크롤 실패',
+  'url-error': '크롤 실패',
 };
 
 function formatOptionalDuration(ms: number | undefined): string {

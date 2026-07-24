@@ -1,8 +1,10 @@
 package com.evidence.instagram.service;
 
 import com.evidence.dcinside.dto.CaptureImage;
+import com.evidence.dcinside.dto.TimedResult;
 import com.evidence.dcinside.service.screenshot.ChromeDriverFactory;
 import com.evidence.dcinside.service.screenshot.ImageStitcher;
+import com.evidence.dcinside.util.StepTimer;
 import com.evidence.instagram.http.InstagramHttpClient;
 import jakarta.annotation.PostConstruct;
 import org.openqa.selenium.By;
@@ -50,6 +52,10 @@ public class InstagramScreenshotService {
     private final int driverStartMaxAttempts;
     private final long driverRecoveryDelayMs;
     private final boolean enabled;
+    private final long contentSettleMs;
+    private final long scrollPauseMs;
+    private final int maxScrollPasses;
+    private final long captureSettleMs;
     private final ReentrantLock captureLock = new ReentrantLock();
 
     private String chromeBinary;
@@ -58,11 +64,15 @@ public class InstagramScreenshotService {
             InstagramHttpClient httpClient,
             @Value("${evidence.chrome.binary:}") String configuredChromeBinary,
             @Value("${evidence.screenshot.page-load-timeout-seconds:15}") int pageLoadTimeoutSeconds,
-            @Value("${evidence.screenshot.content-wait-seconds:45}") int contentWaitSeconds,
+            @Value("${evidence.screenshot.content-wait-seconds:20}") int contentWaitSeconds,
             @Value("${evidence.screenshot.driver-start-timeout-seconds:30}") int driverStartTimeoutSeconds,
             @Value("${evidence.screenshot.driver-start-max-attempts:3}") int driverStartMaxAttempts,
             @Value("${evidence.screenshot.driver-recovery-delay-ms:2000}") long driverRecoveryDelayMs,
-            @Value("${evidence.instagram.screenshot.enabled:true}") boolean enabled
+            @Value("${evidence.instagram.screenshot.enabled:true}") boolean enabled,
+            @Value("${evidence.instagram.screenshot.content-settle-ms:200}") long contentSettleMs,
+            @Value("${evidence.instagram.screenshot.scroll-pause-ms:180}") long scrollPauseMs,
+            @Value("${evidence.instagram.screenshot.max-scroll-passes:6}") int maxScrollPasses,
+            @Value("${evidence.instagram.screenshot.capture-settle-ms:150}") long captureSettleMs
     ) {
         this.httpClient = httpClient;
         this.configuredChromeBinary = configuredChromeBinary == null ? "" : configuredChromeBinary.trim();
@@ -72,6 +82,10 @@ public class InstagramScreenshotService {
         this.driverStartMaxAttempts = Math.max(1, driverStartMaxAttempts);
         this.driverRecoveryDelayMs = Math.max(0, driverRecoveryDelayMs);
         this.enabled = enabled;
+        this.contentSettleMs = Math.max(0, contentSettleMs);
+        this.scrollPauseMs = Math.max(0, scrollPauseMs);
+        this.maxScrollPasses = Math.max(1, maxScrollPasses);
+        this.captureSettleMs = Math.max(0, captureSettleMs);
     }
 
     @PostConstruct
@@ -132,24 +146,33 @@ public class InstagramScreenshotService {
 
         private final ChromeDriver driver;
         private boolean closed;
+        private boolean cookiesInjected;
 
         private CaptureSession(ChromeDriver driver) {
             this.driver = driver;
         }
 
         public CaptureImage capturePost(String url, int excelRowNumber, String shortcode) throws Exception {
+            return capturePostTimed(url, excelRowNumber, shortcode).value();
+        }
+
+        public TimedResult<CaptureImage> capturePostTimed(String url, int excelRowNumber, String shortcode)
+                throws Exception {
             String filename = formatFilename(excelRowNumber, shortcode);
             Path tempFile = Files.createTempFile("instagram-capture-", ".png");
             Exception lastError = null;
             try {
                 for (int attempt = 1; attempt <= MAX_CAPTURE_ATTEMPTS; attempt++) {
+                    StepTimer timer = new StepTimer(log, "instagram-screenshot " + url);
                     try {
-                        injectSessionCookies();
-                        capturePage(url, tempFile);
+                        ensureSessionCookies();
+                        timer.step("page-navigate");
+                        capturePage(url, tempFile, timer);
                         byte[] pngBytes = Files.readAllBytes(tempFile);
-                        return new CaptureImage(filename, pngBytes);
+                        return new TimedResult<>(new CaptureImage(filename, pngBytes), timer.finish());
                     } catch (Exception e) {
                         lastError = e;
+                        cookiesInjected = false;
                         log.warn("Instagram screenshot attempt {}/{} failed for {}: {}",
                                 attempt, MAX_CAPTURE_ATTEMPTS, url, e.getMessage());
                         if (ChromeDriverFactory.isDriverSessionInvalid(e) || ChromeDriverFactory.isDriverStartFailure(e)) {
@@ -182,6 +205,14 @@ public class InstagramScreenshotService {
             }
         }
 
+        private void ensureSessionCookies() {
+            if (cookiesInjected) {
+                return;
+            }
+            injectSessionCookies();
+            cookiesInjected = true;
+        }
+
         private void injectSessionCookies() {
             driver.get("https://www.instagram.com/");
             driver.manage().deleteAllCookies();
@@ -198,13 +229,16 @@ public class InstagramScreenshotService {
             }
         }
 
-        private void capturePage(String url, Path filePath) throws Exception {
+        private void capturePage(String url, Path filePath, StepTimer timer) throws Exception {
             driver.get(url);
             waitForPostContent();
+            timer.step("wait-content");
             dismissOverlays();
             scrollToLoadLazyContent();
+            timer.step("screenshot-scroll");
             byte[] pngBytes = captureFullPage();
             Files.write(filePath, pngBytes);
+            timer.step("capture-images");
             log.info("Instagram screenshot captured: {} ({} bytes)", url, pngBytes.length);
         }
 
@@ -215,11 +249,7 @@ public class InstagramScreenshotService {
             } catch (TimeoutException e) {
                 throw new IllegalStateException("Instagram 게시물 영역을 찾지 못했습니다.", e);
             }
-            try {
-                TimeUnit.MILLISECONDS.sleep(800);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-            }
+            sleepMs(contentSettleMs);
         }
 
         private void dismissOverlays() {
@@ -234,34 +264,45 @@ public class InstagramScreenshotService {
                     """);
         }
 
-        private void scrollToLoadLazyContent() throws InterruptedException {
+        private void scrollToLoadLazyContent() {
             JavascriptExecutor js = driver;
             long previousHeight = 0;
-            for (int i = 0; i < 12; i++) {
+            for (int i = 0; i < maxScrollPasses; i++) {
                 long height = ((Number) js.executeScript(
                         "return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight);"
                 )).longValue();
                 js.executeScript("window.scrollTo(0, arguments[0]);", Math.min(height, MAX_CAPTURE_HEIGHT));
-                TimeUnit.MILLISECONDS.sleep(350);
-                if (height == previousHeight && i > 2) {
+                sleepMs(scrollPauseMs);
+                if (height == previousHeight && i > 1) {
                     break;
                 }
                 previousHeight = height;
             }
             js.executeScript("window.scrollTo(0, 0);");
-            TimeUnit.MILLISECONDS.sleep(300);
+            sleepMs(Math.min(scrollPauseMs, 120));
         }
 
-        private byte[] captureFullPage() throws IOException, InterruptedException {
+        private byte[] captureFullPage() throws IOException {
             long captureHeight = Math.min(resolveCaptureHeight(), MAX_CAPTURE_HEIGHT);
             int windowHeight = (int) Math.max(captureHeight, 400);
             if (windowHeight <= 8192) {
                 driver.manage().window().setSize(new Dimension(CAPTURE_WINDOW_WIDTH, windowHeight));
                 ((JavascriptExecutor) driver).executeScript("window.scrollTo(0, 0);");
-                TimeUnit.MILLISECONDS.sleep(400);
+                sleepMs(captureSettleMs);
                 return captureViewport();
             }
             return captureByScrolling(captureHeight);
+        }
+
+        private void sleepMs(long ms) {
+            if (ms <= 0) {
+                return;
+            }
+            try {
+                TimeUnit.MILLISECONDS.sleep(ms);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
         }
 
         private long resolveCaptureHeight() {
@@ -280,15 +321,15 @@ public class InstagramScreenshotService {
             return height == null ? VIEWPORT_HEIGHT : height.longValue();
         }
 
-        private byte[] captureByScrolling(long totalHeight) throws IOException, InterruptedException {
+        private byte[] captureByScrolling(long totalHeight) throws IOException {
             JavascriptExecutor js = driver;
             driver.manage().window().setSize(new Dimension(CAPTURE_WINDOW_WIDTH, VIEWPORT_HEIGHT));
-            TimeUnit.MILLISECONDS.sleep(150);
+            sleepMs(Math.min(captureSettleMs, 100));
 
             List<byte[]> parts = new ArrayList<>();
             for (long y = 0; y < totalHeight; y += VIEWPORT_HEIGHT) {
                 js.executeScript("window.scrollTo(0, arguments[0]);", y);
-                TimeUnit.MILLISECONDS.sleep(280);
+                sleepMs(scrollPauseMs);
                 parts.add(captureViewport());
                 if (y + VIEWPORT_HEIGHT >= totalHeight) {
                     break;

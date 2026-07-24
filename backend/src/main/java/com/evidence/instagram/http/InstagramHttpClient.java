@@ -111,7 +111,7 @@ public class InstagramHttpClient {
 
     /** Selenium 캡처 등에 주입할 세션 쿠키 맵. */
     public Map<String, String> exportSessionCookies() {
-        reloadSessionCookiesFromFile();
+        ensureSessionCookies();
         return Map.copyOf(sessionCookies);
     }
 

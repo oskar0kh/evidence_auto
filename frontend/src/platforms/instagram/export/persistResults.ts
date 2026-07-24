@@ -5,6 +5,7 @@ import {
   writeArrayBufferToDirectory,
   writeBlobToDirectory,
 } from '../../../shared/lib/localFileStorage';
+import { getOrCreateLogDirectory } from '../../dcinside/crawl/crawlLogExport';
 import {
   addPostRowToWorkbook,
   createCrimeListWorkbook,
@@ -28,6 +29,7 @@ export interface PersistResultsOptions {
   keyword?: string;
   communityName?: string;
   stamp?: string;
+  ensureLogDirectory?: boolean;
 }
 
 interface ShardState {
@@ -63,6 +65,9 @@ export async function createCrawlPersistSession(
   options: PersistResultsOptions
 ): Promise<CrawlPersistSession> {
   const stamp = options.stamp ?? formatTimestamp();
+  if (options.ensureLogDirectory !== false) {
+    await getOrCreateLogDirectory(directory);
+  }
   const resultsRoot = await getOrCreateSubdirectory(directory, buildResultFolderName(stamp));
   return {
     directory,

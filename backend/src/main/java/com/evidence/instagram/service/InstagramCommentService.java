@@ -46,9 +46,11 @@ public class InstagramCommentService {
     private final String childCommentsDocId;
     private final int maxPages;
     private final int maxChildPages;
+    private final int maxChildParents;
     private final long delayMs;
     private final boolean enabled;
     private final boolean apiV1Enabled;
+    private final boolean childEnabled;
 
     public InstagramCommentService(
             InstagramHttpClient httpClient,
@@ -57,11 +59,13 @@ public class InstagramCommentService {
             @Value("${evidence.instagram.doc-id.comments-container:26297736713236852}") String commentsContainerDocId,
             @Value("${evidence.instagram.doc-id.comments:26248690958161038}") String commentsPaginationDocId,
             @Value("${evidence.instagram.doc-id.child-comments:26914912424764761}") String childCommentsDocId,
-            @Value("${evidence.instagram.comments.max-pages:30}") int maxPages,
-            @Value("${evidence.instagram.comments.max-child-pages:10}") int maxChildPages,
-            @Value("${evidence.instagram.comments.delay-ms:400}") long delayMs,
+            @Value("${evidence.instagram.comments.max-pages:50}") int maxPages,
+            @Value("${evidence.instagram.comments.max-child-pages:20}") int maxChildPages,
+            @Value("${evidence.instagram.comments.max-child-parents:0}") int maxChildParents,
+            @Value("${evidence.instagram.comments.delay-ms:150}") long delayMs,
             @Value("${evidence.instagram.comments.paginate:true}") boolean enabled,
-            @Value("${evidence.instagram.comments.api-v1:true}") boolean apiV1Enabled
+            @Value("${evidence.instagram.comments.api-v1:true}") boolean apiV1Enabled,
+            @Value("${evidence.instagram.comments.child-enabled:true}") boolean childEnabled
     ) {
         this.httpClient = httpClient;
         this.htmlParser = htmlParser;
@@ -71,9 +75,12 @@ public class InstagramCommentService {
         this.childCommentsDocId = childCommentsDocId;
         this.maxPages = Math.max(0, maxPages);
         this.maxChildPages = Math.max(0, maxChildPages);
+        // 0 이하 = 대댓글 부모 수 제한 없음(전체 수집)
+        this.maxChildParents = maxChildParents;
         this.delayMs = Math.max(0, delayMs);
         this.enabled = enabled;
         this.apiV1Enabled = apiV1Enabled;
+        this.childEnabled = childEnabled;
     }
 
     public void collectComments(InstagramParsedPost post) {
@@ -125,7 +132,9 @@ public class InstagramCommentService {
         int pages = 0;
         int added = 0;
         while (pages < maxPages) {
-            sleepQuietly();
+            if (pages > 0) {
+                sleepQuietly();
+            }
             try {
                 String apiUrl = buildCommentsApiUrl(post.mediaPk(), maxId, minId);
                 HttpResponse<String> response = httpClient.getApiJson(post.url(), apiUrl);
@@ -258,7 +267,9 @@ public class InstagramCommentService {
         int pages = 0;
 
         while (hasNext && pages < maxPages) {
-            sleepQuietly();
+            if (pages > 0) {
+                sleepQuietly();
+            }
             JsonNode connection = requestCommentsPaginationPage(post.url(), post.mediaPk(), cursor, sortOrder, loggedIn);
             if (connection == null) {
                 break;
@@ -275,15 +286,29 @@ public class InstagramCommentService {
     }
 
     private void fetchChildComments(InstagramParsedPost post, boolean loggedIn) {
+        if (!childEnabled) {
+            return;
+        }
         List<InstagramCommentData> parents = List.copyOf(post.comments()).stream()
                 .filter(c -> c != null && !c.isReply() && c.childCommentCount() > 0 && !c.pk().isBlank())
+                .sorted((a, b) -> Integer.compare(b.childCommentCount(), a.childCommentCount()))
                 .toList();
+        if (maxChildParents > 0 && parents.size() > maxChildParents) {
+            parents = parents.subList(0, maxChildParents);
+        }
         if (parents.isEmpty()) {
             return;
         }
-        log.info("Fetching replies for {} parent comments", parents.size());
-        for (InstagramCommentData parent : parents) {
-            sleepQuietly();
+        log.info(
+                "Fetching replies for {} parent comments{}",
+                parents.size(),
+                maxChildParents > 0 ? " (cap=" + maxChildParents + ")" : " (no parent cap)"
+        );
+        for (int i = 0; i < parents.size(); i++) {
+            if (i > 0) {
+                sleepQuietly();
+            }
+            InstagramCommentData parent = parents.get(i);
             try {
                 if (loggedIn && apiV1Enabled) {
                     post.addComments(fetchRepliesViaApiV1(post.url(), post.mediaPk(), parent.pk()));
