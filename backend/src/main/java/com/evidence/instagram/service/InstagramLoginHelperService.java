@@ -1,5 +1,6 @@
 package com.evidence.instagram.service;
 
+import com.evidence.config.AppPaths;
 import com.evidence.dcinside.service.screenshot.ChromeDriverFactory;
 import com.evidence.instagram.http.InstagramHttpClient;
 import org.openqa.selenium.Cookie;
@@ -68,14 +69,15 @@ public class InstagramLoginHelperService {
 
     public InstagramLoginHelperService(
             InstagramHttpClient httpClient,
+            AppPaths appPaths,
             @Value("${evidence.chrome.binary:}") String chromeBinaryConfigured,
-            @Value("${evidence.instagram.login.profile-dir:./.instagram-chrome-profile}") String profileDir,
+            @Value("${evidence.instagram.login.profile-dir:instagram-chrome-profile}") String profileDir,
             @Value("${evidence.instagram.login.timeout-seconds:300}") long timeoutSeconds,
             @Value("${evidence.instagram.login.poll-interval-ms:1500}") long pollIntervalMs
     ) {
         this.httpClient = httpClient;
         this.chromeBinaryConfigured = chromeBinaryConfigured;
-        this.profileDir = Path.of(profileDir).toAbsolutePath().normalize();
+        this.profileDir = appPaths.resolve(profileDir);
         this.timeoutSeconds = Math.max(30, timeoutSeconds);
         this.pollIntervalMs = Math.max(500, pollIntervalMs);
     }

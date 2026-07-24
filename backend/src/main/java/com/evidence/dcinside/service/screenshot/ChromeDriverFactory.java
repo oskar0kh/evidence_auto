@@ -17,6 +17,7 @@ import java.io.InputStreamReader;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -43,35 +44,109 @@ public final class ChromeDriverFactory {
         String configured = configuredChromeBinary == null ? "" : configuredChromeBinary.trim();
         if (!configured.isEmpty()) {
             Path path = Paths.get(configured);
-            if (!Files.isExecutable(path)) {
+            if (!isUsableBrowserBinary(path)) {
                 throw new IllegalStateException("설정한 Chrome 경로를 실행할 수 없습니다: " + configured);
             }
-            return path.toAbsolutePath().toString();
+            return path.toAbsolutePath().normalize().toString();
         }
 
-        List<String> candidates = List.of(
-                ".chrome/opt/google/chrome/chrome",
-                "/usr/bin/google-chrome-stable",
-                "/usr/bin/google-chrome",
-                "/usr/bin/chromium",
-                "/usr/bin/chromium-browser"
-        );
-
-        for (String candidate : candidates) {
+        for (String candidate : chromeBinaryCandidates()) {
             Path path = Paths.get(candidate);
             if (!path.isAbsolute()) {
                 path = Paths.get(System.getProperty("user.dir")).resolve(path).normalize();
             }
-            if (Files.isExecutable(path)) {
-                return path.toAbsolutePath().toString();
+            if (isUsableBrowserBinary(path)) {
+                log.info("Chrome binary detected: {}", path.toAbsolutePath().normalize());
+                return path.toAbsolutePath().normalize().toString();
             }
+        }
+
+        Optional<String> fromPath = findChromeOnPath();
+        if (fromPath.isPresent()) {
+            log.info("Chrome binary detected via PATH: {}", fromPath.get());
+            return fromPath.get();
         }
 
         throw new IllegalStateException(
                 "Chrome/Chromium 실행 파일을 찾을 수 없습니다. "
-                        + "Google Chrome 또는 chromium-browser를 설치하거나 "
-                        + "evidence.chrome.binary 설정값을 지정하세요."
+                        + "Google Chrome을 설치하거나 evidence.chrome.binary 에 chrome.exe 전체 경로를 지정하세요. "
+                        + "예: C:\\\\Program Files\\\\Google\\\\Chrome\\\\Application\\\\chrome.exe"
         );
+    }
+
+    private static List<String> chromeBinaryCandidates() {
+        List<String> candidates = new ArrayList<>();
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("win")) {
+            String programFiles = System.getenv("PROGRAMFILES");
+            String programFilesX86 = System.getenv("PROGRAMFILES(X86)");
+            String localAppData = System.getenv("LOCALAPPDATA");
+            if (programFiles != null) {
+                candidates.add(programFiles + "\\Google\\Chrome\\Application\\chrome.exe");
+            }
+            if (programFilesX86 != null) {
+                candidates.add(programFilesX86 + "\\Google\\Chrome\\Application\\chrome.exe");
+            }
+            if (localAppData != null) {
+                candidates.add(localAppData + "\\Google\\Chrome\\Application\\chrome.exe");
+            }
+            // Common absolute fallbacks when env vars are missing
+            candidates.add("C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe");
+            candidates.add("C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe");
+        } else {
+            candidates.add(".chrome/opt/google/chrome/chrome");
+            candidates.add("/usr/bin/google-chrome-stable");
+            candidates.add("/usr/bin/google-chrome");
+            candidates.add("/usr/bin/chromium");
+            candidates.add("/usr/bin/chromium-browser");
+            candidates.add("/snap/bin/chromium");
+            candidates.add("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome");
+        }
+        return candidates;
+    }
+
+    /**
+     * Windows에서 {@link Files#isExecutable(Path)} 는 chrome.exe 에 대해 false 를 반환하는 경우가 많다.
+     */
+    private static boolean isUsableBrowserBinary(Path path) {
+        if (path == null || !Files.isRegularFile(path)) {
+            return false;
+        }
+        String os = System.getProperty("os.name", "").toLowerCase();
+        if (os.contains("win")) {
+            String name = path.getFileName().toString().toLowerCase();
+            return name.endsWith(".exe") || Files.isExecutable(path);
+        }
+        return Files.isExecutable(path);
+    }
+
+    private static Optional<String> findChromeOnPath() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        try {
+            ProcessBuilder pb = os.contains("win")
+                    ? new ProcessBuilder("where", "chrome")
+                    : new ProcessBuilder("which", "google-chrome-stable", "google-chrome", "chromium", "chromium-browser");
+            pb.redirectErrorStream(true);
+            Process process = pb.start();
+            String line;
+            try (BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()))) {
+                while ((line = reader.readLine()) != null) {
+                    String trimmed = line.trim();
+                    if (trimmed.isEmpty()) {
+                        continue;
+                    }
+                    Path path = Paths.get(trimmed);
+                    if (isUsableBrowserBinary(path)) {
+                        process.waitFor(3, TimeUnit.SECONDS);
+                        return Optional.of(path.toAbsolutePath().normalize().toString());
+                    }
+                }
+            }
+            process.waitFor(3, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            log.debug("PATH chrome lookup skipped: {}", e.getMessage());
+        }
+        return Optional.empty();
     }
 
     public static void setupChromeDriver(String chromeBinary) {
@@ -110,13 +185,14 @@ public final class ChromeDriverFactory {
     }
 
     private static Optional<String> resolveCachedChromeDriver(String fullVersion, String majorVersion) {
-        Path root = Path.of(System.getProperty("user.home"), ".cache/selenium/chromedriver/linux64");
+        Path root = seleniumChromeDriverCacheRoot();
         if (!Files.isDirectory(root)) {
             return Optional.empty();
         }
+        String driverFileName = isWindows() ? "chromedriver.exe" : "chromedriver";
         if (!fullVersion.isBlank()) {
-            Path exact = root.resolve(fullVersion).resolve("chromedriver");
-            if (Files.isExecutable(exact)) {
+            Path exact = root.resolve(fullVersion).resolve(driverFileName);
+            if (isUsableBrowserBinary(exact) || Files.isRegularFile(exact)) {
                 return Optional.of(exact.toAbsolutePath().toString());
             }
         }
@@ -128,14 +204,31 @@ public final class ChromeDriverFactory {
                     .filter(Files::isDirectory)
                     .filter(dir -> dir.getFileName().toString().startsWith(majorVersion + "."))
                     .sorted((a, b) -> b.getFileName().toString().compareTo(a.getFileName().toString()))
-                    .map(dir -> dir.resolve("chromedriver"))
-                    .filter(Files::isExecutable)
+                    .map(dir -> dir.resolve(driverFileName))
+                    .filter(path -> isUsableBrowserBinary(path) || Files.isRegularFile(path))
                     .map(path -> path.toAbsolutePath().toString())
                     .findFirst();
         } catch (Exception e) {
             log.debug("Cached chromedriver lookup failed: {}", e.getMessage());
             return Optional.empty();
         }
+    }
+
+    private static Path seleniumChromeDriverCacheRoot() {
+        String os = System.getProperty("os.name", "").toLowerCase();
+        String archDir;
+        if (os.contains("win")) {
+            archDir = "win64";
+        } else if (os.contains("mac")) {
+            archDir = "mac-x64";
+        } else {
+            archDir = "linux64";
+        }
+        return Path.of(System.getProperty("user.home"), ".cache", "selenium", "chromedriver", archDir);
+    }
+
+    private static boolean isWindows() {
+        return System.getProperty("os.name", "").toLowerCase().contains("win");
     }
 
     public static ChromeDriver createDriver(String chromeBinary) {
@@ -166,6 +259,11 @@ public final class ChromeDriverFactory {
     }
 
     public static void cleanupStaleChromeProcesses() {
+        if (isWindows()) {
+            runQuietProcess("taskkill", "/F", "/IM", "chromedriver.exe");
+            runQuietProcess("taskkill", "/F", "/IM", "chrome.exe", "/FI", "WINDOWTITLE eq *headless*");
+            return;
+        }
         runQuietProcess("pkill", "-f", "chromedriver");
         runQuietProcess("pkill", "-f", "chrome.*--headless=new");
     }

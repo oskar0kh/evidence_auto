@@ -1,5 +1,6 @@
 package com.evidence.instagram.http;
 
+import com.evidence.config.AppPaths;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -48,13 +49,14 @@ public class InstagramHttpClient {
     private volatile boolean cookiesLoaded;
 
     public InstagramHttpClient(
+            AppPaths appPaths,
             @Value("${evidence.instagram.x-ig-app-id:936619743392459}") String xIgAppId,
             @Value("${evidence.instagram.session-cookies:}") String sessionCookies,
-            @Value("${evidence.instagram.session-cookies-file:./.instagram-session-cookies.txt}") String sessionCookiesFile
+            @Value("${evidence.instagram.session-cookies-file:instagram-session-cookies.txt}") String sessionCookiesFile
     ) {
         this.xIgAppId = xIgAppId;
         this.inlineCookies = sessionCookies != null ? sessionCookies.trim() : "";
-        this.cookiesFile = resolveCookiesFile(sessionCookiesFile);
+        this.cookiesFile = resolveCookiesFile(appPaths, sessionCookiesFile);
         this.httpClient = HttpClient.newBuilder()
                 .followRedirects(HttpClient.Redirect.NORMAL)
                 .connectTimeout(Duration.ofSeconds(15))
@@ -335,12 +337,12 @@ public class InstagramHttpClient {
         return objectMapper.readTree(json);
     }
 
-    private static Path resolveCookiesFile(String sessionCookiesFile) {
+    private static Path resolveCookiesFile(AppPaths appPaths, String sessionCookiesFile) {
         String filePath = sessionCookiesFile != null ? sessionCookiesFile.trim() : "";
         if (filePath.isBlank()) {
-            return Path.of("./.instagram-session-cookies.txt").toAbsolutePath().normalize();
+            return appPaths.resolve("instagram-session-cookies.txt");
         }
-        return Path.of(filePath).toAbsolutePath().normalize();
+        return appPaths.resolve(filePath);
     }
 
     private static String truncate(String body) {

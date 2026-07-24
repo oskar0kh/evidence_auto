@@ -72,6 +72,7 @@ public class ScreenshotService {
     private final ReentrantLock captureLock = new ReentrantLock();
 
     private String chromeBinary;
+    private volatile String chromeInitError;
 
     // 스크린샷 서비스 생성자
     public ScreenshotService(
@@ -100,11 +101,28 @@ public class ScreenshotService {
 
     // 스크린샷 서비스 초기화
     @PostConstruct
-    void init() throws Exception {
-        chromeBinary = ChromeDriverFactory.resolveChromeBinary(configuredChromeBinary);
-        ChromeDriverFactory.setupChromeDriver(chromeBinary);
-        ChromeDriverFactory.warnIfKoreanFontsMissing();
-        log.info("Screenshot Chrome binary: {}, blockTracking={}", chromeBinary, blockTracking);
+    void init() {
+        try {
+            chromeBinary = ChromeDriverFactory.resolveChromeBinary(configuredChromeBinary);
+            ChromeDriverFactory.setupChromeDriver(chromeBinary);
+            ChromeDriverFactory.warnIfKoreanFontsMissing();
+            chromeInitError = null;
+            log.info("Screenshot Chrome binary: {}, blockTracking={}", chromeBinary, blockTracking);
+        } catch (Exception e) {
+            chromeBinary = null;
+            chromeInitError = e.getMessage();
+            log.error("Screenshot Chrome 초기화 실패 — UI는 기동하지만 캡처/크롤 스크린샷은 불가: {}", e.getMessage());
+        }
+    }
+
+    private void ensureChromeReady() {
+        if (chromeBinary == null || chromeBinary.isBlank()) {
+            throw new IllegalStateException(
+                    chromeInitError != null
+                            ? chromeInitError
+                            : "Chrome이 준비되지 않았습니다. Google Chrome을 설치한 뒤 앱을 다시 시작하세요."
+            );
+        }
     }
 
     /**
@@ -112,6 +130,7 @@ public class ScreenshotService {
      * try-with-resources로 닫아 Chrome과 락을 반드시 해제하세요.
      */
     public CaptureSession openCaptureSession() throws Exception {
+        ensureChromeReady();
         captureLock.lock();
         try {
             ChromeDriver driver = createAndConfigureDriver(null);

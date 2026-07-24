@@ -24,3 +24,115 @@ dependencies {
     implementation 'io.github.bonigarcia:webdrivermanager:5.9.2'
     testImplementation 'org.springframework.boot:spring-boot-starter-test'
 }
+
+def frontendDir = file("${projectDir}/../frontend")
+def skipFrontend = project.hasProperty('skipFrontend')
+def isWindows = System.getProperty('os.name').toLowerCase().contains('windows')
+def npmCmd = isWindows ? 'npm.cmd' : 'npm'
+def frontendStaticDir = layout.buildDirectory.dir('generated-frontend')
+
+sourceSets {
+    main {
+        resources {
+            srcDir frontendStaticDir
+        }
+    }
+}
+
+tasks.register('npmInstallFrontend', Exec) {
+    group = 'build'
+    description = 'Install frontend npm dependencies'
+    workingDir = frontendDir
+    commandLine npmCmd, 'ci'
+    inputs.files("$frontendDir/package-lock.json", "$frontendDir/package.json")
+    outputs.dir("$frontendDir/node_modules")
+    onlyIf { !skipFrontend }
+}
+
+tasks.register('buildFrontend', Exec) {
+    group = 'build'
+    description = 'Build Vite frontend into frontend/dist'
+    dependsOn npmInstallFrontend
+    workingDir = frontendDir
+    commandLine npmCmd, 'run', 'build'
+    inputs.dir("$frontendDir/src")
+    inputs.files(
+            "$frontendDir/index.html",
+            "$frontendDir/package.json",
+            "$frontendDir/package-lock.json",
+            "$frontendDir/vite.config.ts",
+            "$frontendDir/tsconfig.json",
+            "$frontendDir/tsconfig.app.json",
+            "$frontendDir/tsconfig.node.json"
+    )
+    outputs.dir("$frontendDir/dist")
+    onlyIf { !skipFrontend }
+}
+
+tasks.register('copyFrontendToStatic', Copy) {
+    group = 'build'
+    description = 'Copy frontend/dist into generated Spring Boot static resources'
+    dependsOn buildFrontend
+    from("$frontendDir/dist")
+    into(frontendStaticDir.map { it.dir('static') })
+    onlyIf { !skipFrontend }
+}
+
+tasks.named('processResources') {
+    if (!skipFrontend) {
+        dependsOn copyFrontendToStatic
+    }
+}
+
+tasks.register('jpackageImage', Exec) {
+    group = 'distribution'
+    description = 'Package bootJar into a Windows/macOS/Linux app image via jpackage'
+    dependsOn bootJar
+
+    def jarName = tasks.named('bootJar').get().archiveFileName.get()
+    def inputDir = layout.buildDirectory.dir('jpackage-input')
+    def outputDir = layout.buildDirectory.dir('jpackage')
+    def appVersion = version.toString().replace('-SNAPSHOT', '')
+
+    doFirst {
+        delete inputDir
+        delete outputDir
+        mkdir inputDir
+        copy {
+            from tasks.named('bootJar').get().archiveFile
+            into inputDir
+        }
+    }
+
+    executable = 'jpackage'
+    args = [
+            '--type', 'app-image',
+            '--name', 'EvidenceAuto',
+            '--app-version', appVersion,
+            '--input', inputDir.get().asFile.absolutePath,
+            '--main-jar', jarName,
+            '--main-class', 'org.springframework.boot.loader.launch.JarLauncher',
+            '--dest', outputDir.get().asFile.absolutePath,
+            '--java-options', '-Devidence.open-browser=true',
+            '--java-options', '-Dspring.profiles.active=desktop',
+    ]
+
+    onlyIf {
+        def proc = new ProcessBuilder('jpackage', '--version').redirectErrorStream(true).start()
+        proc.waitFor() == 0
+    }
+}
+
+tasks.register('windowsDist', Exec) {
+    group = 'distribution'
+    description = 'Build Windows zip on WSL/Linux (bundled Windows JRE + launcher)'
+    workingDir = rootProject.projectDir.parentFile
+    executable = 'bash'
+    args = ['scripts/build-windows-dist.sh']
+}
+
+tasks.register('packageApp') {
+    group = 'distribution'
+    description = 'Alias for windowsDist (WSL/Linux → Windows zip)'
+    dependsOn windowsDist
+}

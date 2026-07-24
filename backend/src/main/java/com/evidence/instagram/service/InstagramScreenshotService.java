@@ -59,6 +59,7 @@ public class InstagramScreenshotService {
     private final ReentrantLock captureLock = new ReentrantLock();
 
     private String chromeBinary;
+    private volatile String chromeInitError;
 
     public InstagramScreenshotService(
             InstagramHttpClient httpClient,
@@ -89,15 +90,22 @@ public class InstagramScreenshotService {
     }
 
     @PostConstruct
-    void init() throws Exception {
+    void init() {
         if (!enabled) {
             log.info("Instagram screenshot capture is disabled");
             return;
         }
-        chromeBinary = ChromeDriverFactory.resolveChromeBinary(configuredChromeBinary);
-        ChromeDriverFactory.setupChromeDriver(chromeBinary);
-        ChromeDriverFactory.warnIfKoreanFontsMissing();
-        log.info("Instagram screenshot Chrome binary: {}", chromeBinary);
+        try {
+            chromeBinary = ChromeDriverFactory.resolveChromeBinary(configuredChromeBinary);
+            ChromeDriverFactory.setupChromeDriver(chromeBinary);
+            ChromeDriverFactory.warnIfKoreanFontsMissing();
+            chromeInitError = null;
+            log.info("Instagram screenshot Chrome binary: {}", chromeBinary);
+        } catch (Exception e) {
+            chromeBinary = null;
+            chromeInitError = e.getMessage();
+            log.error("Instagram screenshot Chrome 초기화 실패: {}", e.getMessage());
+        }
     }
 
     public boolean isEnabled() {
@@ -107,6 +115,13 @@ public class InstagramScreenshotService {
     public CaptureSession openSession() throws Exception {
         if (!enabled) {
             throw new IllegalStateException("Instagram screenshot capture is disabled");
+        }
+        if (chromeBinary == null || chromeBinary.isBlank()) {
+            throw new IllegalStateException(
+                    chromeInitError != null
+                            ? chromeInitError
+                            : "Chrome이 준비되지 않았습니다. Google Chrome을 설치한 뒤 앱을 다시 시작하세요."
+            );
         }
         captureLock.lock();
         try {

@@ -12,6 +12,9 @@ frontend/dist/
 backend/build/
 backend/bin/
 backend/.gradle/
+dist/
+.cache/
+**/jpackage-input/
 
 # IDE
 .idea/
@@ -28,11 +31,16 @@ Thumbs.db
 backend/google-chrome-stable_current_amd64.deb
 backend/.chrome/
 
+# App data (desktop)
+.evidence-auto/
+
 # Instagram login helper (secrets / browser profile)
 backend/.instagram-session-cookies.txt
 backend/.instagram-chrome-profile/
 **/.instagram-session-cookies.txt
 **/.instagram-chrome-profile/
+**/instagram-session-cookies.txt
+**/instagram-chrome-profile/
 
 # TypeScript
 *.tsbuildinfo
